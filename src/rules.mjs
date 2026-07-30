@@ -73,6 +73,24 @@ const PERMISSION_API = {
 
 const BROAD_HOSTS = ["<all_urls>", "*://*/*", "http://*/*", "https://*/*"];
 
+// Words that carry no ranking value, excluded from the keyword-stuffing count.
+//
+// WITHOUT THIS THE RULE FIRED ON ORDINARY ENGLISH. The word pattern demands three
+// letters or more, which "the", "and", "for" and "you" all clear, so a plain
+// two-sentence description saying "the" five times was reported as repeating
+// terms. Google's trigger is padding a listing with search terms; "the" is not a
+// search term anybody stuffs. This file's own header says a warning that appears
+// on every extension carries no information, and that is what this had become.
+// The bad fixture stuffs "coupons" and "deals", which are exactly the words this
+// list does not contain, so the rule still catches what it is for.
+const STOPWORDS = new Set([
+  "the", "and", "for", "you", "your", "with", "that", "this", "from", "are",
+  "can", "not", "but", "all", "any", "was", "were", "has", "have", "had",
+  "will", "when", "what", "which", "who", "how", "why", "its", "our", "their",
+  "them", "they", "than", "then", "into", "onto", "over", "out", "off", "one",
+  "get", "gets", "use", "uses", "using", "just", "also", "more", "most", "only",
+]);
+
 // Every place a manifest can ask for access to a page, in one function because
 // two rules used to collect them separately and DRIFTED. broad-host-permissions
 // read all three keys; disclosure-2026 read only host_permissions, so two
@@ -221,10 +239,29 @@ export const RULES = [
   {
     id: "listing-metadata",
     category: "no-metadata",
-    run({ manifest }) {
+    run({ manifest, i18nUnresolved = [] }) {
       if (!manifest) return [];
       const out = [];
+      // A __MSG_ placeholder that resolves to nothing is not a short description,
+      // it is a package that does not load - Chrome rejects it before a reviewer
+      // reads a word of it, the same shape as manifest-v2 above. Reported first
+      // and separately, because "the description is 22 characters" is a wrong
+      // diagnosis of it and sends the developer to edit the wrong file.
+      if (i18nUnresolved.length) {
+        out.push(finding({
+          severity: "fail",
+          title: `A localised manifest field does not resolve: ${i18nUnresolved[0].why}`,
+          detail:
+            "Localised fields are written as __MSG_name__ in manifest.json and the text lives in " +
+            "_locales/<default_locale>/messages.json. Chrome substitutes them at load time, so a placeholder " +
+            "with no matching message leaves the field empty and the package is rejected before review. " +
+            "Until this is fixed, every check in this tool that reads your name or description is reading the " +
+            "placeholder rather than your words.",
+          evidence: i18nUnresolved.map((u) => ({ file: "manifest.json", line: 1, text: u.why })),
+        }));
+      }
       const desc = (manifest.description || "").trim();
+      if (/__MSG_[A-Za-z0-9_@]+__/.test(desc)) return out; // unresolved: nothing honest to measure
       if (!desc) {
         out.push(finding({
           severity: "fail",
@@ -257,8 +294,14 @@ export const RULES = [
     category: "udp-secure",
     run({ files }) {
       // localhost over http is normal in development and is not a finding.
+      // Comments are blanked first for the same reason unused-permissions blanks
+      // them: "// old endpoint was http://api.example.com" is a URL the package
+      // never contacts, and reporting it sends someone hunting for a call that
+      // is not there. Markup is passed through untouched by codeView, so an
+      // http:// src inside an HTML comment is still reported - that one is worth
+      // keeping, because a commented-out <script src> is a byte away from live.
       const hits = grep(
-        files,
+        codeView(files),
         /["'`]http:\/\/(?!localhost|127\.0\.0\.1|\[::1\])[^"'`\s]+/i,
         (f) => isCode(f) || isMarkup(f),
       );
@@ -278,7 +321,10 @@ export const RULES = [
     id: "crypto-mining",
     category: "cryptocurrency-mining",
     run({ files }) {
-      const hits = grep(files, /coinhive|cryptonight|cryptoloot|webminerpool|minergate|\bcoinimp\b/i, (f) => isCode(f) || isMarkup(f));
+      // Comments blanked: this is a FAIL, and accusing someone of shipping a
+      // miner on the strength of "// we removed the coinhive experiment" is the
+      // expensive direction. Code in a comment does not mine anything.
+      const hits = grep(codeView(files), /coinhive|cryptonight|cryptoloot|webminerpool|minergate|\bcoinimp\b/i, (f) => isCode(f) || isMarkup(f));
       if (!hits.length) return [];
       return [finding({
         severity: "fail",
@@ -322,7 +368,9 @@ export const RULES = [
       const words = desc.toLowerCase().match(/[a-z][a-z0-9-]{2,}/g) || [];
       const counts = {};
       for (const w of words) counts[w] = (counts[w] || 0) + 1;
-      const repeated = Object.entries(counts).filter(([, n]) => n >= 4).map(([w, n]) => `${w} x${n}`);
+      const repeated = Object.entries(counts)
+        .filter(([w, n]) => n >= 4 && !STOPWORDS.has(w))
+        .map(([w, n]) => `${w} x${n}`);
       const commas = (desc.match(/,/g) || []).length;
       const out = [];
       if (repeated.length) {
@@ -350,9 +398,22 @@ export const RULES = [
     run({ manifest, files }) {
       if (!manifest) return [];
       const overrides = manifest.chrome_url_overrides || {};
-      const settings = manifest.chrome_settings_overrides || {};
-      const declared = Boolean(overrides.newtab) || Boolean(settings.search_provider) || Boolean(settings.homepage);
-      const hits = grep(files, /chrome:\/\/newtab|["'`]about:newtab|chrome\.tabs\.update\([^)]*newtab/i, isCode);
+      // ONLY chrome_url_overrides.newtab excuses this, and the narrowing is the
+      // whole point of the rule. It used to accept chrome_settings_overrides
+      // .homepage or .search_provider as well - but those govern the HOMEPAGE and
+      // the OMNIBOX, which are different surfaces with their own override APIs.
+      // The effect was that an extension hijacking the New Tab Page from code
+      // could silence a FAIL by declaring an unrelated homepage override, which
+      // is the manoeuvre the policy exists to catch. Confirmed by running two
+      // packages whose code was byte-identical: adding a homepage key turned
+      // "1 failing" into "0 failing".
+      //
+      // What the detection below actually looks for is newtab and nothing else,
+      // so the declaration that answers it must be newtab and nothing else. If a
+      // future version detects omnibox or homepage manipulation, it needs its own
+      // hits list paired with its own key - not a shared any-of-three flag.
+      const declared = Boolean(overrides.newtab);
+      const hits = grep(codeView(files), /chrome:\/\/newtab|["'`]about:newtab|chrome\.tabs\.update\([^)]*newtab/i, isCode);
       if (!hits.length || declared) return [];
       return [finding({
         severity: "fail",
@@ -403,19 +464,28 @@ export const RULES = [
     change: "Limited Use Policy",
     run({ manifest }) {
       if (!manifest) return [];
-      const declared = [...(manifest.permissions || [])];
-      const collecting = declared.filter((p) => ["history", "topSites", "browsingData", "bookmarks", "cookies", "webRequest", "webNavigation"].includes(p));
+      // optional_permissions COUNT, and leaving them out was drift rather than a
+      // decision: disclosure-2026 twenty lines up reads both keys, and so does
+      // unused-permissions, so one extension got told its history access was in
+      // scope for disclosure and NOT in scope for limited use. An optional
+      // permission collects exactly the same data once the user grants it; the
+      // difference is when it is asked for, not what it reaches.
+      const declared = [
+        ...(manifest.permissions || []).map((p) => ({ p, optional: false })),
+        ...(manifest.optional_permissions || []).map((p) => ({ p, optional: true })),
+      ];
+      const collecting = declared.filter(({ p }) => ["history", "topSites", "browsingData", "bookmarks", "cookies", "webRequest", "webNavigation"].includes(p));
       if (!collecting.length) return [];
       return [finding({
         severity: "warn",
-        title: `Browsing-activity permissions declared: ${collecting.join(", ")}`,
+        title: `Browsing-activity permissions declared: ${collecting.map(({ p, optional }) => (optional ? `${p} (optional)` : p)).join(", ")}`,
         detail:
           "Under the policy as updated on 1 August 2026, data collected must be necessary for the disclosed " +
           "single purpose. Write down, per permission, the visible feature that stops working without it. If you " +
           "cannot name one, that permission is the finding. Note the live policy DOES allow related operational " +
           "purposes such as maintaining, securing or measuring performance; the announcement's wording did not " +
           "convey that, so do not over-correct.",
-        evidence: collecting.map((p) => ({ file: "manifest.json", line: 1, text: `"${p}"` })),
+        evidence: collecting.map(({ p, optional }) => ({ file: "manifest.json", line: 1, text: `"${p}"${optional ? " in optional_permissions" : ""}` })),
       })];
     },
   },

@@ -549,5 +549,140 @@ const moved = await pol("https://example.com/privacy", async () => res(200, POLI
 check("privacy url: a redirect is reported as info, not a problem",
   sev(moved, "fail").length === 0 && moved.some((f) => f.severity === "info" && /redirects/.test(f.title)));
 
+// --- s077: five defects in the rules that had never been audited -------------
+//
+// EVERY ONE OF THESE IS AN AGREEMENT ASSERTION. Two packages differ in ONE way
+// that must not change the verdict, and the test demands the SAME answer from
+// both. Agreement cannot be satisfied by the tool crashing on both inputs or by
+// a rule silently returning [], which a "does it fire" test can be. Each pair is
+// also pinned to the specific finding, so a rule that goes quiet everywhere
+// fails here rather than passing twice.
+
+const pkg = (files) => {
+  const dir = mkdtempSync(join(tmpdir(), "wsl-"));
+  for (const [rel, body] of Object.entries(files)) {
+    const full = join(dir, rel);
+    mkdirSync(dirname(full), { recursive: true });
+    writeFileSync(full, typeof body === "string" ? body : JSON.stringify(body));
+  }
+  return dir;
+};
+
+// 1. LOCALISATION. A localised extension does not put its description in
+// manifest.json - it writes __MSG_extDescription__ and the sentence lives in
+// _locales/<default_locale>/messages.json. Reading the placeholder literally
+// gave the SAME extension opposite answers, and the localised side got it wrong
+// both ways: an invented "22 characters" warning, and silence about a
+// description that reads "prediction market ... sportsbook betting". The silent
+// half is the dangerous one - it dropped a finding about a policy enforced from
+// 1 August 2026.
+const GAMBLING_DESC = "A prediction market and sportsbook betting companion showing live gambling odds for every parlay.";
+const inlineDesc = pkg({
+  "manifest.json": { manifest_version: 3, name: "Odds", version: "1.0.0", description: GAMBLING_DESC, icons: { 16: "i.png" } },
+});
+const localisedDesc = pkg({
+  "manifest.json": { manifest_version: 3, name: "__MSG_extName__", version: "1.0.0", default_locale: "en", description: "__MSG_extDescription__", icons: { 16: "i.png" } },
+  "_locales/en/messages.json": { extName: { message: "Odds" }, extDescription: { message: GAMBLING_DESC } },
+});
+{
+  const a = ids(lint(inlineDesc)).sort();
+  const b = ids(lint(localisedDesc)).sort();
+  check("i18n: localising a description does not change the verdict", JSON.stringify(a) === JSON.stringify(b), `${a} vs ${b}`);
+  check("i18n: and the verdict they agree on is the real one", a.includes("prediction-markets-2026"), String(a));
+  check("i18n: the localised package is not accused of a short description",
+    !lint(localisedDesc).findings.some((f) => /characters/.test(f.title)));
+}
+// Message names are case-insensitive in Chrome, so the lookup must be too.
+check("i18n: message names are matched case-insensitively",
+  !ids(lint(pkg({
+    "manifest.json": { manifest_version: 3, name: "X", version: "1.0.0", default_locale: "en", description: "__MSG_extDescription__", icons: { 16: "i.png" } },
+    "_locales/en/messages.json": { ExtDescription: { message: "A perfectly ordinary description of what this extension does." } },
+  }))).includes("listing-metadata"));
+
+// THE CONTROL THAT KEEPS THE ABOVE HONEST: resolution must never INVENT text. A
+// placeholder with no message behind it is a package Chrome refuses to load, and
+// it must be reported as exactly that rather than measured as a short string.
+for (const [name, files] of Object.entries({
+  "no default_locale": { "manifest.json": { manifest_version: 3, name: "X", version: "1.0.0", description: "__MSG_extDescription__", icons: { 16: "i.png" } } },
+  "no messages.json": { "manifest.json": { manifest_version: 3, name: "X", version: "1.0.0", default_locale: "en", description: "__MSG_extDescription__", icons: { 16: "i.png" } } },
+  "no such message": {
+    "manifest.json": { manifest_version: 3, name: "X", version: "1.0.0", default_locale: "en", description: "__MSG_extDescription__", icons: { 16: "i.png" } },
+    "_locales/en/messages.json": { somethingElse: { message: "unrelated" } },
+  },
+})) {
+  const r = lint(pkg(files));
+  check(`i18n: an unresolvable placeholder (${name}) fails and says why`,
+    bySeverity(r, "fail").includes("listing-metadata") && r.findings.some((f) => /does not resolve/.test(f.title)),
+    JSON.stringify(r.findings.map((f) => f.title)));
+  check(`i18n: (${name}) is not misdiagnosed as a short description`,
+    !r.findings.some((f) => /characters/.test(f.title)));
+}
+
+// 2. NEW TAB PAGE. The rule detects newtab manipulation from code and used to
+// accept ANY of three override keys as the declaration that excuses it. Two of
+// them govern different surfaces, so declaring an unrelated homepage override
+// silenced a FAIL - the exact manoeuvre the policy exists to catch.
+const NTP_CODE = 'chrome.tabs.onCreated.addListener((t) => {\n  if (t.pendingUrl === "chrome://newtab/") chrome.tabs.update(t.id, { url: "https://ours.example/" });\n});\n';
+const ntpBase = { manifest_version: 3, name: "Start", version: "1.0.0", description: "Opens your chosen start page when you open a new tab.", icons: { 16: "i.png" }, permissions: ["tabs"] };
+const ntpBare = pkg({ "manifest.json": ntpBase, "sw.js": NTP_CODE });
+const ntpHomepage = pkg({ "manifest.json": { ...ntpBase, chrome_settings_overrides: { homepage: "https://ours.example/home" } }, "sw.js": NTP_CODE });
+const ntpSearch = pkg({ "manifest.json": { ...ntpBase, chrome_settings_overrides: { search_provider: { name: "s", search_url: "https://ours.example/?q={searchTerms}", encoding: "UTF-8", is_default: true, keyword: "s", favicon_url: "https://ours.example/f.ico" } } }, "sw.js": NTP_CODE });
+for (const [name, dir] of [["a homepage override", ntpHomepage], ["a search provider", ntpSearch]]) {
+  check(`ntp: declaring ${name} does not excuse hijacking the new tab page`,
+    ids(lint(dir)).includes("ntp-override"), JSON.stringify(ids(lint(dir))));
+}
+check("ntp: the undeclared case still fails", bySeverity(lint(ntpBare), "fail").includes("ntp-override"));
+// THE FALSE-POSITIVE CONTROL, and the reason the narrowing above is a fix rather
+// than a regression: an extension that declares the OFFICIAL override is doing
+// the correct thing and must hear nothing at all.
+check("ntp: the official chrome_url_overrides.newtab is still accepted",
+  !ids(lint(pkg({ "manifest.json": { ...ntpBase, chrome_url_overrides: { newtab: "newtab.html" } }, "sw.js": NTP_CODE }))).includes("ntp-override"));
+
+// 3. OPTIONAL PERMISSIONS. disclosure-2026 and unused-permissions both read
+// permissions AND optional_permissions; limited-use-2026 read only the first, so
+// one extension was told its history access was in scope for disclosure and not
+// in scope for limited use. Same data either way; the difference is when it is
+// asked for.
+const histBase = { manifest_version: 3, name: "Hist", version: "1.0.0", description: "Summarises the pages you read most often over the last week.", icons: { 16: "i.png" } };
+const histRequired = pkg({ "manifest.json": { ...histBase, permissions: ["history"] }, "sw.js": 'chrome.history.search({ text: "" }, () => {});\n' });
+const histOptional = pkg({ "manifest.json": { ...histBase, optional_permissions: ["history"] }, "sw.js": 'chrome.history.search({ text: "" }, () => {});\n' });
+{
+  const a = ids(lint(histRequired)).sort();
+  const b = ids(lint(histOptional)).sort();
+  check("optional permissions: required and optional history get the same rules", JSON.stringify(a) === JSON.stringify(b), `${a} vs ${b}`);
+  check("optional permissions: and both include the limited-use rule", a.includes("limited-use-2026"), String(a));
+  // ?. rather than a bare access: against the pre-fix source this rule produces
+  // NOTHING, and a throw here would abort the run and take every test after it
+  // with it - which is how a control set silently stops controlling anything.
+  check("optional permissions: the finding says which one is optional",
+    /history \(optional\)/.test(lint(histOptional).findings.find((f) => f.rule === "limited-use-2026")?.title || ""));
+}
+
+// 4. KEYWORD STUFFING ON ORDINARY ENGLISH. The word pattern demands three
+// letters, which "the" clears, so plain prose using it five times was reported
+// as repeating terms. This file's own header says the clean fixture is the
+// load-bearing half; a warning that fires on ordinary English is that failure
+// arriving through a different door.
+check("keyword stuffing: ordinary prose is not reported",
+  !ids(lint(pkg({ "manifest.json": { manifest_version: 3, name: "Reader", version: "1.0.0", icons: { 16: "i.png" }, description: "Shows the reading time for the article you are on, and the reading time for the comments, so that you know how long the whole page will take before you start." } }))).includes("keyword-stuffing"));
+// The control: real stuffing must still be caught. The bad fixture repeats
+// "coupons" and "deals", and the assertion at the top of this file covers it -
+// this one pins that the stopword list did not swallow the mechanism entirely.
+check("keyword stuffing: a genuinely stuffed description is still caught",
+  ids(lint(pkg({ "manifest.json": { manifest_version: 3, name: "Deals", version: "1.0.0", icons: { 16: "i.png" }, description: "coupons, coupons, promo, coupons, deals, deals, vouchers, deals, discounts, coupons" } }))).includes("keyword-stuffing"));
+
+// 5. COMMENTED-OUT CODE. A deleted endpoint left in a comment is not an endpoint
+// the package contacts, and a miner in a comment mines nothing. Both rules read
+// raw text, which is the same defect unused-permissions had fixed in s076 - the
+// lesson did not transfer by being written down next to the tool.
+const httpLive = pkg({ "manifest.json": { manifest_version: 3, name: "S", version: "1.0.0", description: "Sends a summary of the page you are reading to your own server.", icons: { 16: "i.png" } }, "sw.js": 'const API = "http://api.example.com/collect";\nfetch(API);\n' });
+const httpDead = pkg({ "manifest.json": { manifest_version: 3, name: "S", version: "1.0.0", description: "Sends a summary of the page you are reading to your own server.", icons: { 16: "i.png" } }, "sw.js": '// const API = "http://api.example.com/collect";\n// fetch(API);\n' });
+check("comments: a live http endpoint is reported", ids(lint(httpLive)).includes("insecure-transmission"));
+check("comments: the same endpoint commented out is not", !ids(lint(httpDead)).includes("insecure-transmission"));
+const mineLive = pkg({ "manifest.json": { manifest_version: 3, name: "M", version: "1.0.0", description: "Runs a small background task while you browse the web pages.", icons: { 16: "i.png" } }, "sw.js": 'import CoinHive from "./ch.js";\nnew CoinHive.Anonymous("k").start();\n' });
+const mineDead = pkg({ "manifest.json": { manifest_version: 3, name: "M", version: "1.0.0", description: "Runs a small background task while you browse the web pages.", icons: { 16: "i.png" } }, "sw.js": '// we removed the CoinHive experiment in 2019\n' });
+check("comments: a live miner still fails", bySeverity(lint(mineLive), "fail").includes("crypto-mining"));
+check("comments: a miner mentioned only in a comment is not an accusation", !ids(lint(mineDead)).includes("crypto-mining"));
+
 console.log(`\nwebstore-lint: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

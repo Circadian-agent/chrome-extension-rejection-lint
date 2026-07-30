@@ -70,7 +70,81 @@ export function scan(root) {
     }
   }
 
-  return { root, files, skipped, manifest, manifestError };
+  const { manifest: localized, unresolved } = resolveI18n(manifest, files, skipped);
+
+  return { root, files, skipped, manifest: localized, manifestRaw: manifest, i18nUnresolved: unresolved, manifestError };
+}
+
+// Chrome's own localisation, resolved before any rule reads the manifest.
+//
+// WHY THIS IS NOT COSMETIC. A localised extension does not put its description in
+// manifest.json at all: it writes "__MSG_extDescription__" there and the real
+// sentence lives in _locales/<default_locale>/messages.json. Three rules read
+// that text - keyword-stuffing, prediction-markets-2026, ai-guardrail-2026 - and
+// listing-metadata measures its length. Reading the placeholder literally meant
+// TWO extensions with the identical description got opposite answers depending on
+// whether they were localised, and the localised one got the wrong answer BOTH
+// ways: a bogus "the description is 22 characters" warning, and total silence
+// about a description reading "prediction market ... sportsbook betting". The
+// silent direction is the dangerous one, because the finding it dropped is the
+// one about a policy that starts being enforced on 1 August 2026.
+//
+// FAIL-SAFE DIRECTION: an unresolvable placeholder is left EXACTLY as written.
+// This function never invents text. What it cannot resolve it reports, and the
+// caller decides - a substituted guess would put words in a developer's listing
+// that they never wrote.
+//
+// Only `name` and `description` are substituted, because those are the fields the
+// rules read. Chrome allows __MSG_ in several other manifest fields; adding one
+// here means checking that no rule reads it structurally first.
+const I18N_FIELDS = ["name", "description"];
+
+export function resolveI18n(manifest, files, skipped = []) {
+  const unresolved = [];
+  if (!manifest) return { manifest, unresolved };
+
+  const needs = I18N_FIELDS.filter((f) => typeof manifest[f] === "string" && /__MSG_[A-Za-z0-9_@]+__/.test(manifest[f]));
+  if (!needs.length) return { manifest, unresolved };
+
+  const locale = typeof manifest.default_locale === "string" ? manifest.default_locale : null;
+  const wanted = locale ? `_locales/${locale}/messages.json` : null;
+  const file = wanted ? files.find((f) => f.path.split(/[\\/]/).join("/") === wanted) : null;
+  // A locale file the scanner refused to read (over the size limit, unreadable)
+  // is NOT evidence that a message is missing. Staying quiet there is the same
+  // fail-safe direction as everything else in this file.
+  const wasSkipped = wanted ? skipped.some((s) => s.path.split(/[\\/]/).join("/") === wanted) : false;
+
+  let messages = null;
+  if (file) {
+    try {
+      const parsed = JSON.parse(file.text);
+      // Chrome treats message names as case-insensitive, so the lookup is too.
+      messages = new Map(Object.entries(parsed).map(([k, v]) => [k.toLowerCase(), v]));
+    } catch (e) {
+      unresolved.push({ field: null, placeholder: null, why: `${wanted} is not valid JSON: ${e.message}` });
+    }
+  }
+
+  const out = { ...manifest };
+  for (const field of needs) {
+    out[field] = manifest[field].replace(/__MSG_([A-Za-z0-9_@]+)__/g, (whole, key) => {
+      const entry = messages?.get(key.toLowerCase());
+      const text = entry && typeof entry.message === "string" ? entry.message : null;
+      if (text !== null) return text;
+      if (wasSkipped) return whole; // reported by the scanner already; do not double-accuse
+      unresolved.push({
+        field,
+        placeholder: whole,
+        why: !locale
+          ? `manifest.json uses ${whole} but declares no default_locale`
+          : !file
+            ? `manifest.json uses ${whole} but the package has no ${wanted}`
+            : `${wanted} has no message named ${key}`,
+      });
+      return whole;
+    });
+  }
+  return { manifest: out, unresolved };
 }
 
 // Find every line matching a pattern, with its file and 1-indexed line number.
