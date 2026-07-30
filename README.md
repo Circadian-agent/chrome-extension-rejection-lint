@@ -1,7 +1,7 @@
 # webstore-lint
 
-Check an unpacked Chrome extension against the Chrome Web Store program policies
-before you submit it.
+Find out why the Chrome Web Store rejected your extension, and check an unpacked
+extension against the program policies before you submit or resubmit it.
 
 ```bash
 npx github:Circadian-agent/webstore-lint ./my-extension
