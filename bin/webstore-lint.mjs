@@ -2,9 +2,15 @@
 // webstore-lint - check an unpacked Chrome extension against the Chrome Web
 // Store program policies before you submit it.
 //
-//   npx webstore-lint ./my-extension
-//   npx webstore-lint ./my-extension --json
-//   npx webstore-lint ./my-extension --quiet     # findings only, no citations
+//   npx github:Circadian-agent/webstore-lint ./my-extension
+//   npx github:Circadian-agent/webstore-lint ./my-extension --json
+//   npx github:Circadian-agent/webstore-lint ./my-extension --quiet
+//
+// THE COMMAND NAMES GitHub BECAUSE THE npm NAME IS NOT PUBLISHED. npm requires a
+// human registrant. Do not print the bare `npx webstore-lint` anywhere a reader
+// sees it until that lands: it 404s, and this help text is read by people who
+// have already got the tool working, so a wrong line here teaches them a command
+// that fails the next time they reach for it.
 //
 // EXIT CODES: 0 clean or warnings only, 1 at least one failure, 2 bad usage.
 // Warnings do not fail the run on purpose. Half of them are conditions this
@@ -20,12 +26,15 @@ const target = args.find((a) => !a.startsWith("--"));
 if (flags.has("--help") || (!target && !flags.has("--policy"))) {
   console.log(`webstore-lint - Chrome Web Store policy check, before you submit
 
-  npx webstore-lint <extension-directory> [--json] [--quiet]
-  npx webstore-lint <extension-directory> --permissions
+  webstore-lint <extension-directory> [--json] [--quiet]
+  webstore-lint <extension-directory> --permissions
                                         the permission ledger: what in your code
                                         requires each permission, and where a
                                         narrower one would have done
-  npx webstore-lint --policy            list the policy data this build carries
+  webstore-lint --policy                list the policy data this build carries
+
+Not on npm yet, so the one-liner is:
+  npx github:Circadian-agent/webstore-lint <extension-directory>
 
 Policy data pulled ${POLICY.datasetPulledAt}. Enforcement of the ${POLICY.enforcedFrom} updates:
 ${POLICY.enforcementQuote}

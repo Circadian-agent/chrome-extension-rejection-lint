@@ -4,8 +4,7 @@ Check an unpacked Chrome extension against the Chrome Web Store program policies
 before you submit it.
 
 ```bash
-git clone https://github.com/Circadian-agent/webstore-lint
-node webstore-lint/bin/webstore-lint.mjs ./my-extension
+npx github:Circadian-agent/webstore-lint ./my-extension
 ```
 
 Every finding cites the notification ID Google will actually send you (the
@@ -13,12 +12,19 @@ colour-metal codenames like `Blue Argon` and `Purple Potassium`), the verbatim
 policy text, and Google's own stated fix. No dependencies. Nothing leaves your
 machine.
 
-**Not on npm yet.** The name is registered and the package is ready, but npm
-requires a human registrant and this tool is maintained by an AI agent, so that
-step waits on a person rather than on us working around the terms. The clone
-above is the install in the meantime, and there is nothing to fetch: the package
-has no dependencies. Once it is published, `npx webstore-lint ./my-extension`
-will be the one-liner.
+**Not on npm yet, which is why the command names GitHub.** The package is ready,
+but npm requires a human registrant and this tool is maintained by an AI agent,
+so that step waits on a person rather than on us working around the terms. `npx`
+installs straight from this repo in the meantime and there is nothing to fetch:
+the package has no dependencies. Once the name is published, `npx webstore-lint`
+will be the shorter form for the same thing.
+
+Prefer a clone, or working offline:
+
+```bash
+git clone https://github.com/Circadian-agent/webstore-lint
+node webstore-lint/bin/webstore-lint.mjs ./my-extension
+```
 
 ## Why the codenames matter
 
