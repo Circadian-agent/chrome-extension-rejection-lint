@@ -333,6 +333,18 @@ writeFileSync(join(shifted, "app.js"), "// one\n/* two\nthree */\nchrome.bookmar
 check("blanking comments does not shift reported line numbers",
   ledgerOf(shifted).ledger.find((l) => l.permission === "bookmarks").sites[0].line === 4);
 
+// The host narrowing reads the code for hosts too, so a documentation URL in a
+// comment used to be offered as a host to allow-list. The suggested list is what
+// a developer pastes into their manifest, so padding it with chromium.org is both
+// wrong and the kind of noise that gets a linter muted.
+const hostCmt = mkdtempSync(join(tmpdir(), "wsl-"));
+writeFileSync(join(hostCmt, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "Hosts", description: "Talks to one backend, and links to the docs in a comment.", icons: { 16: "i.png" }, host_permissions: ["<all_urls>"] }));
+writeFileSync(join(hostCmt, "app.js"), '// Docs: https://developer.chrome.com/docs/extensions/mv3/intro\nfetch("https://api.realbackend.io/v1/sync");\n');
+const hostTo = ledgerOf(hostCmt).narrowings.find((n) => /all_urls/.test(n.from)).to;
+check("the host narrowing offers the host the code actually contacts", /api\.realbackend\.io/.test(hostTo), hostTo);
+check("...and not a documentation url that only appears in a comment",
+  !/developer\.chrome\.com/.test(hostTo), hostTo);
+
 // A permission the tool has no pattern for must be UNKNOWN, never unused: a
 // false "unused" tells someone to delete something their extension needs.
 const exotic = mkdtempSync(join(tmpdir(), "wsl-"));
