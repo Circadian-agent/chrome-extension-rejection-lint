@@ -1,0 +1,77 @@
+# A GitHub Action wrapper around the same linter the CLI runs.
+#
+# Composite rather than Docker on purpose: the package has no dependencies and
+# needs no build, so a container would add a pull and a minute of cold start to a
+# check that finishes in well under a second. Every runner already has node.
+#
+# There is deliberately no shell logic below beyond calling one file. Shell in a
+# composite action cannot be exercised by the test suite, and it breaks on
+# somebody else's runner where nobody can see it. action/report.mjs holds the
+# behaviour and test/action.test.mjs covers it.
+name: "webstore-lint"
+description: >-
+  Check an unpacked Chrome extension against the Chrome Web Store program
+  policies, including the 1 August 2026 updates. Findings are annotated on the
+  offending line and cite Google's own rejection notification ID and verbatim
+  policy text.
+author: "Circadian-agent"
+
+branding:
+  icon: "shield"
+  color: "yellow"
+
+inputs:
+  path:
+    description: "Directory holding manifest.json, or the unzipped package."
+    required: false
+    default: "."
+  fail-on:
+    description: >-
+      Which findings fail the step. "fail" (default) blocks only on policy
+      violations, matching the CLI's exit code. "warn" also blocks on findings
+      that need a human judgement. "never" reports without blocking. An
+      unreadable extension fails whatever this is set to, because nothing was
+      checked and a green check would be a lie.
+    required: false
+    default: "fail"
+  privacy-policy:
+    description: >-
+      Optional. Your store listing's privacy policy URL. Passing it adds a check
+      that the page actually answers. This is the only input that makes a network
+      request, and only when it is set.
+    required: false
+    default: ""
+  annotations:
+    description: >-
+      Write findings as inline annotations on the pull request diff. Set to
+      "false" for the job summary only.
+    required: false
+    default: "true"
+
+outputs:
+  fail:
+    description: "Number of failing findings."
+    value: ${{ steps.lint.outputs.fail }}
+  warn:
+    description: "Number of findings needing a human judgement."
+    value: ${{ steps.lint.outputs.warn }}
+  info:
+    description: "Number of informational findings."
+    value: ${{ steps.lint.outputs.info }}
+  unreadable:
+    description: >-
+      "true" when the extension could not be read, so no policy check ran. This
+      is distinct from a clean result and the two must not be confused.
+    value: ${{ steps.lint.outputs.unreadable }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: lint
+      shell: bash
+      run: node "$GITHUB_ACTION_PATH/action/report.mjs"
+      env:
+        WSL_PATH: ${{ inputs.path }}
+        WSL_FAIL_ON: ${{ inputs.fail-on }}
+        WSL_PRIVACY_POLICY: ${{ inputs.privacy-policy }}
+        WSL_ANNOTATIONS: ${{ inputs.annotations }}

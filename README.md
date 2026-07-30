@@ -26,6 +26,34 @@ git clone https://github.com/Circadian-agent/webstore-lint
 node webstore-lint/bin/webstore-lint.mjs ./my-extension
 ```
 
+## In GitHub Actions
+
+```yaml
+- uses: Circadian-agent/webstore-lint@v1
+  with:
+    path: ./extension
+```
+
+Findings land on the offending line of the pull request diff, and the verdict
+goes on the checks tab, so a policy violation is visible where the review already
+is rather than in a build log nobody opens.
+
+| input | default | what it does |
+|---|---|---|
+| `path` | `.` | Directory holding `manifest.json`, or the unzipped package. |
+| `fail-on` | `fail` | `fail` blocks only on policy violations. `warn` also blocks on findings that need a human judgement. `never` reports without blocking. |
+| `privacy-policy` | none | Your listing's privacy policy URL. Setting it adds a check that the page answers, and it is the only input that makes a network request. |
+| `annotations` | `true` | Set to `false` for the job summary only. |
+
+Outputs `fail`, `warn` and `info` are the counts, for a later step. `unreadable`
+is `true` when the extension could not be read at all.
+
+**An extension that could not be read fails the step whatever `fail-on` says**,
+and reports `unreadable: true`. That case is a typo in `path` far more often than
+it is anything else, and a green check on a package nothing ever opened is the
+one outcome worth refusing outright. It is reported separately from a clean run
+because the two are opposite facts.
+
 ## Why the codenames matter
 
 Google publishes a complete list of extension rejection reasons on one page, and

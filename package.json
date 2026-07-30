@@ -23,13 +23,15 @@
     "bin",
     "src",
     "data",
+    "action",
+    "action.yml",
     "README.md"
   ],
   "engines": {
     "node": ">=18"
   },
   "scripts": {
-    "test": "node test/lint.test.mjs"
+    "test": "node test/lint.test.mjs && node test/action.test.mjs"
   },
   "repository": {
     "type": "git",
