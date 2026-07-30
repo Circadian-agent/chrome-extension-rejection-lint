@@ -35,6 +35,54 @@ There are 36 of them across 27 violation categories. This package carries all
 node bin/webstore-lint.mjs --policy     # list every category and codename
 ```
 
+<!-- CODENAMES:START -->
+
+All 36 codenames across 27 categories, generated from
+[the open dataset](https://circadian-agent.com/data/chrome-rejection-ids.json)
+(CC BY 4.0). Every quote behind these was fetched from developer.chrome.com and
+re-checked against the raw HTML.
+
+| Codename | Category | What it actually means |
+|---|---|---|
+| [Blue Argon](https://circadian-agent.com/research/chrome-rejections/blue-argon) | Additional requirements for Manifest V3 | Your Manifest V3 extension is loading or executing code that is not inside the package you submitted. |
+| [Blue Copper](https://circadian-agent.com/research/chrome-rejections/prohibited-products) | Prohibited products | The extension gets round paywalls or logins, or enables downloading content the user has no right to. |
+| [Blue Lithium](https://circadian-agent.com/research/chrome-rejections/prohibited-products) | Prohibited products | The extension gets round paywalls or logins, or enables downloading content the user has no right to. |
+| [Blue Magnesium](https://circadian-agent.com/research/chrome-rejections/prohibited-products) | Prohibited products | The extension gets round paywalls or logins, or enables downloading content the user has no right to. |
+| [Blue Nickel](https://circadian-agent.com/research/chrome-rejections/circumvents-the-overrides-api) | Circumvents the overrides API | You changed the New Tab Page or omnibox search by some route other than the official Overrides API. |
+| [Blue Potassium](https://circadian-agent.com/research/chrome-rejections/circumvents-the-overrides-api) | Circumvents the overrides API | You changed the New Tab Page or omnibox search by some route other than the official Overrides API. |
+| [Blue Titanium](https://circadian-agent.com/research/chrome-rejections/blue-titanium) | Enforcement circumvention | You tried to dodge a review or an enforcement action. This is the one that ends accounts. |
+| [Blue Zinc](https://circadian-agent.com/research/chrome-rejections/prohibited-products) | Prohibited products | The extension gets round paywalls or logins, or enables downloading content the user has no right to. |
+| [Grey Copper](https://circadian-agent.com/research/chrome-rejections/grey-copper) | Online gambling | The extension provides, facilitates, or directs users to real money gambling or prediction markets. |
+| [Grey Lithium](https://circadian-agent.com/research/chrome-rejections/grey-lithium) | Pornographic content | The extension contains, serves, or exists mainly to enhance sexually explicit material. |
+| [Grey Magnesium](https://circadian-agent.com/research/chrome-rejections/grey-magnesium) | Hate content | The extension carries or points to hate speech, or lacks moderation for user-generated content that does. |
+| [Grey Nickel](https://circadian-agent.com/research/chrome-rejections/grey-nickel) | Not family safe | Your extension has adult-ish content but you never ticked the Mature box. |
+| [Grey Potassium](https://circadian-agent.com/research/chrome-rejections/grey-potassium) | Violent content | The extension carries or points to gratuitously violent, threatening, harassing or bullying content. |
+| [Grey Silicon](https://circadian-agent.com/research/chrome-rejections/grey-silicon) | Cryptocurrency mining | The extension mines cryptocurrency, or gives users the ability to. |
+| [Grey Titanium](https://circadian-agent.com/research/chrome-rejections/grey-titanium) | Affiliate Ads | You inject affiliate links, codes or cookies without disclosing it and without the user doing something that would lead them to expect it. |
+| [Grey Zinc](https://circadian-agent.com/research/chrome-rejections/grey-zinc) | Illegal activities | The extension engages in or promotes unlawful activity. |
+| [Purple Copper](https://circadian-agent.com/research/chrome-rejections/purple-copper) | User data policy - secure transmission | You send user data over an insecure channel, or leak it in URLs and headers. |
+| [Purple Lithium](https://circadian-agent.com/research/chrome-rejections/purple-lithium) | User data policy - disclosure policy | You collect user data but your privacy policy is missing, unreachable, in the wrong field, or does not actually describe data handling. |
+| [Purple Magnesium](https://circadian-agent.com/research/chrome-rejections/purple-magnesium) | User data policy - other requirements | You collect browsing activity you do not need for a visible feature, or you expose sensitive data publicly. |
+| [Purple Nickel](https://circadian-agent.com/research/chrome-rejections/purple-nickel) | User data policy - prominent disclosure | You collect user data without prominently telling the user first and getting their consent. |
+| [Purple Potassium](https://circadian-agent.com/research/chrome-rejections/purple-potassium) | Excessive permissions | You asked for a permission you do not use, or a broader one than the job needs. |
+| [Red Argon](https://circadian-agent.com/research/chrome-rejections/single-purpose) | Single purpose | Your extension does two or more unrelated things and needs to be split into separate extensions. |
+| [Red Copper](https://circadian-agent.com/research/chrome-rejections/single-purpose) | Single purpose | Your extension does two or more unrelated things and needs to be split into separate extensions. |
+| [Red Lithium](https://circadian-agent.com/research/chrome-rejections/single-purpose) | Single purpose | Your extension does two or more unrelated things and needs to be split into separate extensions. |
+| [Red Magnesium](https://circadian-agent.com/research/chrome-rejections/single-purpose) | Single purpose | Your extension does two or more unrelated things and needs to be split into separate extensions. |
+| [Red Nickel](https://circadian-agent.com/research/chrome-rejections/deceptive-behavior) | Deceptive behavior | What the extension does and what its listing says do not match, or it passes itself off as someone else's product. |
+| [Red Potassium](https://circadian-agent.com/research/chrome-rejections/deceptive-behavior) | Deceptive behavior | What the extension does and what its listing says do not match, or it passes itself off as someone else's product. |
+| [Red Silicon](https://circadian-agent.com/research/chrome-rejections/deceptive-behavior) | Deceptive behavior | What the extension does and what its listing says do not match, or it passes itself off as someone else's product. |
+| [Red Titanium](https://circadian-agent.com/research/chrome-rejections/red-titanium) | Obfuscation | Your submitted code is obfuscated. Minification is fine, obfuscation is not. |
+| [Red Zinc](https://circadian-agent.com/research/chrome-rejections/red-zinc) | Deceptive installation | How you got users to install the extension was misleading, regardless of what the extension itself does. |
+| [Yellow Argon](https://circadian-agent.com/research/chrome-rejections/yellow-argon) | Keyword stuffing | Your description is padded with keywords, site lists or locations to game search ranking. |
+| [Yellow Lithium](https://circadian-agent.com/research/chrome-rejections/yellow-lithium) | Redirection | The extension is a shortcut. All it does is open a website or another product. |
+| [Yellow Magnesium](https://circadian-agent.com/research/chrome-rejections/yellow-magnesium) | Functionality not working | The reviewer could not get your extension to do what your listing says it does, or your package is broken. |
+| [Yellow Nickel](https://circadian-agent.com/research/chrome-rejections/yellow-nickel) | Spam | Duplicate extensions, manipulated ratings or installs, notification abuse, or messages sent as the user. |
+| [Yellow Potassium](https://circadian-agent.com/research/chrome-rejections/yellow-potassium) | Minimum Functionality | The extension is too thin to be worth listing, or it just links out to a service that does the actual work. |
+| [Yellow Zinc](https://circadian-agent.com/research/chrome-rejections/yellow-zinc) | Missing or insufficient metadata | Your listing is missing an icon, title, screenshots or description, or what is there does not explain the extension. |
+
+<!-- CODENAMES:END -->
+
 ## The 1 August 2026 policy updates
 
 Four policies changed. Enforcement begins on 1 August 2026, in Google's words:
