@@ -89,5 +89,42 @@ export function grep(files, re, filter = () => true) {
   return hits;
 }
 
+// The same search, but over the whole file instead of line by line, still
+// reporting the 1-indexed line the match STARTS on so the evidence is unchanged.
+//
+// WHY BOTH EXIST. grep() above is line-based, and for most rules that is right:
+// the pattern and the evidence are one line. But an HTML attribute is not
+// line-shaped. A long <script src="..."> wrapped across lines - which is exactly
+// what a formatter does to it - was invisible to grep(), so two byte-identical
+// pages differing ONLY in where the line breaks fell got different answers, and
+// the silent one was the formatted one. That was in remote-code, the highest
+// severity rule in the tool and the first trigger Google names for MV3.
+//
+// Use this for any pattern that can legally span a newline. Do NOT use it for
+// patterns anchored to line structure - matching across lines is the whole
+// point, and for a line-anchored rule that is a false positive waiting to happen.
+export function grepAcross(files, re, filter = () => true) {
+  const hits = [];
+  for (const f of files) {
+    if (!filter(f)) continue;
+    const rx = new RegExp(re.source, re.flags.includes("g") ? re.flags : re.flags + "g");
+    let m;
+    while ((m = rx.exec(f.text)) !== null) {
+      // Count the newlines before the match rather than searching the lines
+      // array, so a match that spans lines is attributed to the line it opens on.
+      const line = f.text.slice(0, m.index).split("\n").length;
+      hits.push({
+        file: f.path,
+        line,
+        match: m[0].replace(/\s+/g, " ").slice(0, 120),
+        text: (f.lines[line - 1] || "").trim().slice(0, 160),
+      });
+      // A zero-length match would spin forever.
+      if (m.index === rx.lastIndex) rx.lastIndex++;
+    }
+  }
+  return hits;
+}
+
 export const isCode = (f) => [".js", ".mjs", ".cjs", ".ts", ".jsx", ".tsx"].includes(f.ext);
 export const isMarkup = (f) => [".html", ".htm"].includes(f.ext);

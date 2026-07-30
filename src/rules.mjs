@@ -18,7 +18,7 @@
 // is worth less than none. When in doubt a rule warns and says what a human
 // must check.
 
-import { grep, isCode, isMarkup } from "./scan.mjs";
+import { grep, grepAcross, isCode, isMarkup } from "./scan.mjs";
 
 // Permissions whose presence means USER data is in play. Used by the disclosure
 // and privacy-policy rules. Kept explicit rather than inferred: a list you can
@@ -124,7 +124,12 @@ export const RULES = [
     category: "additional-requirements-for-manifest-v3",
     run({ files }) {
       const out = [];
-      const remoteScript = grep(files, /<script[^>]+src\s*=\s*["'](https?:)?\/\/[^"']+/i, isMarkup);
+      // [^>] already crosses newlines - a JS character class ignores line
+      // structure - so the pattern was never the problem and must NOT be widened
+      // to [\s\S]: that would run past the closing > of this tag and match a
+      // remote src on some later <img>. The bug was that grep() fed it one line
+      // at a time, so it was never shown a newline to cross.
+      const remoteScript = grepAcross(files, /<script[^>]+src\s*=\s*["'](https?:)?\/\/[^"']+/i, isMarkup);
       if (remoteScript.length) {
         out.push(finding({
           severity: "fail",
@@ -147,7 +152,7 @@ export const RULES = [
           evidence: evals,
         }));
       }
-      const dynImport = grep(files, /import\s*\(\s*["'`](https?:)?\/\//, isCode);
+      const dynImport = grepAcross(files, /import\s*\(\s*["'`](https?:)?\/\//, isCode);
       if (dynImport.length) {
         out.push(finding({
           severity: "fail",

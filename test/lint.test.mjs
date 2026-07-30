@@ -163,6 +163,48 @@ check(
 check("the clean fixture's manifest really was read", clean.manifest?.name === "Reading Time");
 check("a NARROW content script is not treated as user data in scope", !ids(clean).includes("disclosure-2026"));
 
+// --- where the line breaks fall must not change the answer -------------------
+//
+// remote-code is the highest-severity rule in the tool and the first trigger
+// Google names for MV3. It searched line by line, so a long <script src="...">
+// WRAPPED ACROSS LINES - which is what a formatter does to it - was invisible,
+// and the extension came back clean. Same shape as the disclosure-2026 bug:
+// two inputs differing in one way that should not matter, disagreeing.
+
+const html = (body) => {
+  const dir = mkdtempSync(join(tmpdir(), "wsl-"));
+  writeFileSync(join(dir, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "Fmt", version: "1.0.0", description: "An extension used to compare two spellings of the same page.", icons: { 16: "i.png" } }));
+  writeFileSync(join(dir, "popup.html"), body);
+  return lint(dir);
+};
+
+const oneLine = html('<html><body><script src="https://cdn.example.com/x.js"></script></body></html>\n');
+const wrapped = html('<html><body>\n<script\n  src="https://cdn.example.com/x.js">\n</script>\n</body></html>\n');
+
+check("a remote script on one line is caught", ids(oneLine).includes("remote-code"));
+check("a remote script wrapped across lines is caught too", ids(wrapped).includes("remote-code"));
+check(
+  "both are the same severity, so formatting cannot downgrade a fail",
+  bySeverity(oneLine, "fail").includes("remote-code") && bySeverity(wrapped, "fail").includes("remote-code"),
+);
+// The evidence must point at the line the tag OPENS on, not at the file.
+{
+  // Reached through optional chaining on purpose: when this regresses there is
+  // no finding at all, and a test that THROWS there takes the rest of the suite
+  // down with it instead of reporting one clean failure.
+  const e = wrapped.findings.find((f) => f.rule === "remote-code")?.evidence?.[0];
+  check("the wrapped match is attributed to the line the tag opens on", e && e.file === "popup.html" && e.line === 2, JSON.stringify(e));
+}
+
+// THE FALSE-POSITIVE CONTROL, and it is why the pattern was NOT widened to
+// [\s\S]. A remote image is not remote code. A lazy any-character match would
+// run from an inline <script> past its closing > and match the <img> src, which
+// would turn every page with a CDN logo into a policy failure - and a fail that
+// is wrong is worse here than a miss, because it is the one people mute.
+const remoteImg = html('<html><body>\n<script>var a = 1;</script>\n<img src="https://cdn.example.com/logo.png">\n</body></html>\n');
+check("the manifest was read, so a silent result means the rules ran", remoteImg.manifest?.name === "Fmt");
+check("a remote IMAGE is not reported as remote code", !ids(remoteImg).includes("remote-code"));
+
 // --- the permission ledger (src/audit.mjs) ----------------------------------
 //
 // THE LOAD-BEARING HALF HERE IS THE NEGATIVE CASE. A narrowing suggestion is
