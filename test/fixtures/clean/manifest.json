@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "Reading Time",
+  "version": "1.0.0",
+  "description": "Shows the estimated reading time for the article on the page you are viewing.",
+  "icons": { "16": "icon16.png", "128": "icon128.png" },
+  "permissions": ["storage"],
+  "content_scripts": [{ "matches": ["https://example.com/*"], "js": ["content.js"] }]
+}

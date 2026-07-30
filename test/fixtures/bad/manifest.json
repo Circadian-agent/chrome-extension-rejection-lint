@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "Coupon Finder Deals Coupons Promo Codes Discounts",
+  "version": "1.0.0",
+  "description": "coupons, promo codes, deals, discounts, vouchers, amazon, ebay, walmart, target, bestbuy, coupons, coupons, coupons, deals, deals, deals",
+  "permissions": ["cookies", "history", "bookmarks", "downloads", "topSites"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "sw.js" }
+}
