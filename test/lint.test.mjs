@@ -108,6 +108,61 @@ const deps = lint(withDeps);
 check("node_modules is not scanned", deps.counts.fail === 0, `got: ${bySeverity(deps, "fail").join(", ")}`);
 check("and the skip is reported rather than silent", deps.skipped.some((s) => s.path.includes("node_modules")));
 
+// --- access to every site counts wherever it is DECLARED ---------------------
+//
+// A manifest can ask for every site from three different keys, and disclosure-2026
+// used to read only host_permissions. So two extensions with identical access got
+// different answers about the 1 August disclosure rule depending on spelling, and
+// the shape that was told nothing - content_scripts with no host_permissions at
+// all - is the common MV3 one. Found by running it, not by reading it.
+//
+// The three manifests below differ ONLY in which key carries "every site".
+
+const everySite = (key) => {
+  const dir = mkdtempSync(join(tmpdir(), "wsl-"));
+  const base = { manifest_version: 3, name: "Reader", version: "1.0.0", description: "Highlights text on the pages you visit and saves your highlights.", icons: { 16: "i.png" } };
+  const shapes = {
+    host_permissions: { host_permissions: ["<all_urls>"] },
+    content_scripts: { content_scripts: [{ matches: ["<all_urls>"], js: ["content.js"] }] },
+    permissions: { permissions: ["https://*/*"] },
+  };
+  writeFileSync(join(dir, "manifest.json"), JSON.stringify({ ...base, ...shapes[key] }));
+  writeFileSync(join(dir, "content.js"), "document.title;\n");
+  return lint(dir);
+};
+
+const shapes = ["host_permissions", "content_scripts", "permissions"].map((k) => [k, everySite(k)]);
+
+for (const [key, r] of shapes) {
+  // Named rule id, so a rule that silently returns [] fails rather than passes.
+  check(`every-site access via ${key} triggers the 1 August disclosure rule`, ids(r).includes("disclosure-2026"));
+  check(`every-site access via ${key} triggers the broad-host rule`, ids(r).includes("broad-host-permissions"));
+  // Evidence must name the pattern, because the fix is in whichever key they
+  // actually wrote and an empty evidence list sends them looking in the wrong one.
+  const f = r.findings.find((x) => x.rule === "disclosure-2026");
+  check(
+    `and the ${key} finding carries the host pattern as evidence`,
+    f && f.evidence.some((e) => /<all_urls>|https:\/\/\*/.test(e.text)),
+    f ? JSON.stringify(f.evidence.map((e) => e.text)) : "no finding",
+  );
+}
+
+// The whole point is that they AGREE. Comparing the rule sets catches a future
+// rule drifting the same way disclosure-2026 did.
+check(
+  "all three spellings of every-site access produce the same findings",
+  new Set(shapes.map(([, r]) => ids(r).slice().sort().join(","))).size === 1,
+  shapes.map(([k, r]) => `${k}: ${ids(r).sort().join("+")}`).join("  |  "),
+);
+
+// THE NOISE CONTROL, and it is why narrow matches are deliberately excluded: the
+// clean fixture is a reading-time extension with a content script on ONE site.
+// If that fired, the rule would fire on almost every extension in the store.
+// Asserting the manifest parsed keeps "no finding" from being satisfied by a
+// lint that never ran - the same trap the header warns about.
+check("the clean fixture's manifest really was read", clean.manifest?.name === "Reading Time");
+check("a NARROW content script is not treated as user data in scope", !ids(clean).includes("disclosure-2026"));
+
 // --- the permission ledger (src/audit.mjs) ----------------------------------
 //
 // THE LOAD-BEARING HALF HERE IS THE NEGATIVE CASE. A narrowing suggestion is

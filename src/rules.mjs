@@ -72,6 +72,31 @@ const PERMISSION_API = {
 
 const BROAD_HOSTS = ["<all_urls>", "*://*/*", "http://*/*", "https://*/*"];
 
+// Every place a manifest can ask for access to a page, in one function because
+// two rules used to collect them separately and DRIFTED. broad-host-permissions
+// read all three keys; disclosure-2026 read only host_permissions, so two
+// extensions with identical access to every site got different answers about the
+// 1 August disclosure rule depending on which key they declared it in - and the
+// content_scripts shape, which is the common one, was the one told nothing.
+//
+// The three keys are not interchangeable spellings. content_scripts[].matches is
+// where an MV3 extension that only reads pages declares itself and it needs no
+// host_permissions at all; hosts listed in `permissions` is the MV2 spelling,
+// and MV2 extensions are the ones already in trouble.
+//
+// Callers filter to BROAD_HOSTS. Narrow matches are deliberately NOT treated as
+// user data in scope: the clean fixture is a reading-time extension with a
+// content script on one site, and a warning that fires on that fires on almost
+// everything. Same reasoning as the "storage" omission from DATA_PERMISSIONS.
+export function declaredHosts(manifest) {
+  if (!manifest) return [];
+  return [
+    ...(manifest.host_permissions || []),
+    ...(manifest.permissions || []).filter((p) => typeof p === "string" && (p.includes("://") || p === "<all_urls>")),
+    ...(manifest.content_scripts || []).flatMap((c) => c.matches || []),
+  ];
+}
+
 const finding = (o) => ({ evidence: [], ...o });
 
 // ---------------------------------------------------------------------------
@@ -164,12 +189,7 @@ export const RULES = [
     category: "excessive-permissions",
     run({ manifest }) {
       if (!manifest) return [];
-      const hosts = [
-        ...(manifest.host_permissions || []),
-        ...(manifest.permissions || []).filter((p) => typeof p === "string" && (p.includes("://") || p === "<all_urls>")),
-        ...(manifest.content_scripts || []).flatMap((c) => c.matches || []),
-      ];
-      const broad = [...new Set(hosts.filter((h) => BROAD_HOSTS.includes(h)))];
+      const broad = [...new Set(declaredHosts(manifest).filter((h) => BROAD_HOSTS.includes(h)))];
       if (!broad.length) return [];
       return [finding({
         severity: "warn",
@@ -340,7 +360,8 @@ export const RULES = [
       if (!manifest) return [];
       const declared = [...(manifest.permissions || []), ...(manifest.optional_permissions || [])];
       const dataPerms = declared.filter((p) => DATA_PERMISSIONS.includes(p));
-      const broad = [...(manifest.host_permissions || [])].some((h) => BROAD_HOSTS.includes(h));
+      const broadHosts = [...new Set(declaredHosts(manifest).filter((h) => BROAD_HOSTS.includes(h)))];
+      const broad = broadHosts.length > 0;
       if (!dataPerms.length && !broad) return [];
       return [finding({
         severity: "warn",
@@ -350,7 +371,13 @@ export const RULES = [
           "NOT closely related to the extension's single purpose. The live policy now covers ANY user data. " +
           "The disclosure lives in your store listing, which this tool cannot see, so verify it yourself. " +
           "READ THE WARNING BELOW ABOUT GOOGLE'S OWN TROUBLESHOOTING PAGE.",
-        evidence: dataPerms.map((p) => ({ file: "manifest.json", line: 1, text: `"${p}"` })),
+        evidence: [
+          ...dataPerms.map((p) => ({ file: "manifest.json", line: 1, text: `"${p}"` })),
+          // Named so the developer can find it: broad access reaches this rule
+          // from three different manifest keys and the fix is in whichever one
+          // they actually wrote.
+          ...broadHosts.map((h) => ({ file: "manifest.json", line: 1, text: `"${h}"` })),
+        ],
       })];
     },
   },
