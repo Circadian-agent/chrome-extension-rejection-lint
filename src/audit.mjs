@@ -85,6 +85,99 @@ const DISCLOSURE_CATEGORY = {
 
 const BROAD = new Set(["<all_urls>", "*://*/*", "http://*/*", "https://*/*", "*://*/", "file:///*"]);
 
+// Blank out comments, keeping every other byte where it was.
+//
+// WHY THIS EXISTS: a commented-out call used to count as a call site, so an
+// extension that DELETED its chrome.bookmarks code and left "// we used to call
+// chrome.bookmarks.getTree here" behind was reported as using bookmarks. That is
+// exactly Google's Purple Potassium case - permission declared, nothing left that
+// needs it - and the tool's headline verdict missed it.
+//
+// Comment bytes become spaces rather than being removed, so offsets, line counts
+// and therefore every reported line number are unchanged.
+//
+// THE FAIL-SAFE DIRECTION IS DELIBERATE. Blanking real code would invent an
+// "unused" verdict, and that advice deletes a permission the extension needs -
+// the expensive direction. So blanking happens ONLY from a comment opener found
+// in normal state: strings and template literals are tracked and skipped, and an
+// ambiguous slash is resolved toward "not a comment". A missed comment leaves a
+// permission reading "used", which is a miss rather than a false accusation.
+export function stripComments(text) {
+  const out = text.split("");
+  const n = text.length;
+  let i = 0;
+  let prev = ""; // last significant (non-space) character, for the regex/divide call
+  const blank = (a, b) => {
+    for (let k = a; k < b && k < n; k++) if (out[k] !== "\n") out[k] = " ";
+  };
+
+  while (i < n) {
+    const c = text[i];
+    const d = text[i + 1];
+
+    if (c === "/" && d === "/") {
+      let j = i + 2;
+      while (j < n && text[j] !== "\n") j++;
+      blank(i, j);
+      i = j;
+      continue;
+    }
+    if (c === "/" && d === "*") {
+      let j = text.indexOf("*/", i + 2);
+      j = j === -1 ? n : j + 2;
+      blank(i, j);
+      i = j;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      let j = i + 1;
+      while (j < n && text[j] !== c && text[j] !== "\n") j += text[j] === "\\" ? 2 : 1;
+      i = j + 1;
+      prev = c;
+      continue;
+    }
+    if (c === "`") {
+      let j = i + 1;
+      while (j < n && text[j] !== "`") j += text[j] === "\\" ? 2 : 1;
+      i = j + 1;
+      prev = c;
+      continue;
+    }
+    // A slash here is either division or a regex literal. Only the regex case
+    // needs skipping, and guessing wrong that way merely means a comment inside
+    // the span is missed - the safe direction. An unescaped // cannot appear
+    // inside a regex literal anyway, because it would have closed it.
+    if (c === "/" && (prev === "" || "=(,:[!&|?{};+-*%~^<>return".includes(prev))) {
+      let j = i + 1;
+      let cls = false;
+      while (j < n && text[j] !== "\n") {
+        const e = text[j];
+        if (e === "\\") { j += 2; continue; }
+        if (e === "[") cls = true;
+        else if (e === "]") cls = false;
+        else if (e === "/" && !cls) break;
+        j++;
+      }
+      i = j + 1;
+      prev = "/";
+      continue;
+    }
+    if (!/\s/.test(c)) prev = c;
+    i++;
+  }
+  return out.join("");
+}
+
+// The same files with comments blanked, computed once. Every call-site question
+// in this pass is about code, not prose.
+function codeView(files) {
+  return files.map((f) => {
+    if (!isCode(f)) return f;
+    const text = stripComments(f.text);
+    return { ...f, text, lines: text.split("\n") };
+  });
+}
+
 // Find every line where a namespace is touched. Whole-file includes() cannot do
 // this: it answers "somewhere" and a justification needs "here".
 function callSites(files, needles) {
@@ -122,6 +215,53 @@ function looksMinified(files) {
   return suspect;
 }
 
+// Does anything here need tabs beyond the one the user just acted on? Asked over
+// the FILE TEXT, never one line.
+//
+// WHY, because this was a real bug and it is the second time this shape has cost
+// us: the guard used to be one regex tested against a single line, so a
+// chrome.tabs.query({...}) whose object a formatter wrapped across two lines
+// stopped matching, and a background tab enumerator was advised to drop tabs for
+// activeTab. Two packages differing ONLY in where a line break fell got opposite
+// advice, and the wrong one breaks the extension. Note the brace class [^}] was
+// always newline-safe; the defect was only ever the per-line application.
+//
+// The same expression also let an `active: true` anywhere on the line cancel an
+// OBSERVER match, so the two questions are now asked separately.
+function needsAllTabs(files) {
+  const hits = [];
+  const at = (f, index, text) => ({
+    file: f.path,
+    line: f.text.slice(0, index).split("\n").length,
+    api: "chrome.tabs",
+    text: text.replace(/\s+/g, " ").trim().slice(0, 160),
+  });
+
+  for (const f of files) {
+    if (!isCode(f)) continue;
+
+    // Observers fire for tabs the user has never interacted with, so activeTab
+    // cannot carry them however the call is formatted.
+    for (const m of f.text.matchAll(
+      /\b(?:chrome|browser)\.tabs\.(?:onUpdated|onCreated|onRemoved|onActivated|onReplaced|getAllInWindow)\b/g,
+    )) {
+      hits.push(at(f, m.index, m[0]));
+    }
+
+    // A query is narrowable only if it can be SHOWN to ask for the active tab.
+    // Anything we cannot read - a wrapped object, a variable, a spread - counts
+    // against the narrowing, because honesty rule 2 in this file's header says a
+    // claim we cannot support is worse than no claim, and the cost of being wrong
+    // here is a developer deleting a permission their extension needs.
+    for (const m of f.text.matchAll(/\b(?:chrome|browser)\.tabs\.query\s*\(\s*(\{[^}]*\})?/g)) {
+      const arg = m[1];
+      if (arg && /\bactive\s*:\s*true\b/.test(arg) && !/\.\.\./.test(arg)) continue;
+      hits.push(at(f, m.index, m[0]));
+    }
+  }
+  return hits;
+}
+
 // --- the narrowing analysis --------------------------------------------------
 //
 // Each entry states the alternative, the evidence that suggests it, and the
@@ -139,7 +279,7 @@ function narrowings({ manifest, files, used }) {
   // user just acted on.
   if (perms.has("tabs")) {
     const sites = used.tabs || [];
-    const needsAll = sites.filter((s) => /tabs\.(onUpdated|onCreated|onRemoved|onActivated|query\s*\(\s*\{[^}]*\}|getAllInWindow)/.test(s.text) && !/active:\s*true/.test(s.text));
+    const needsAll = needsAllTabs(files);
     if (sites.length && !needsAll.length) {
       out.push({
         from: "tabs", to: "activeTab",
@@ -228,6 +368,11 @@ export function audit({ manifest, files, skipped }) {
     ...(manifest.optional_permissions || []).map((p) => ({ name: p, where: "optional_permissions" })),
   ].filter((p) => typeof p.name === "string" && !p.name.includes("://") && p.name !== "<all_urls>");
 
+  // Call-site evidence is drawn from code with comments blanked; minification
+  // detection below deliberately uses the RAW files, because how the shipped
+  // bytes are laid out is the thing it is measuring.
+  const code = codeView(files);
+
   const used = {};
   const ledger = [];
 
@@ -238,7 +383,7 @@ export function audit({ manifest, files, skipped }) {
         note: "This pass carries no API pattern for this permission, so it says nothing rather than guessing. Absence here is not evidence of disuse." });
       continue;
     }
-    const sites = apis.length ? callSites(files, apis) : [];
+    const sites = apis.length ? callSites(code, apis) : [];
     used[name] = sites;
     if (name === "activeTab") {
       ledger.push({ permission: name, where, status: "used", sites: [],
@@ -262,7 +407,7 @@ export function audit({ manifest, files, skipped }) {
   return {
     manifestVersion: manifest.manifest_version,
     ledger,
-    narrowings: narrowings({ manifest, files, used }),
+    narrowings: narrowings({ manifest, files: code, used }),
     disclosures: ledger
       .filter((l) => l.status === "used" && l.disclosure)
       .map((l) => ({ permission: l.permission, category: l.disclosure, sites: l.sites.slice(0, 3) })),

@@ -234,6 +234,46 @@ writeFileSync(join(observerTabs, "app.js"), 'chrome.tabs.onUpdated.addListener((
 check("tabs -> activeTab is NOT suggested when tabs are observed in the background",
   !narrowedFrom(ledgerOf(observerTabs)).includes("tabs"), `got: ${narrowedFrom(ledgerOf(observerTabs)).join(", ")}`);
 
+// WHERE THE LINE BREAKS FALL MUST NOT CHANGE THE ADVICE. The guard used to be a
+// single regex tested against ONE LINE, so wrapping a query object across lines -
+// what a formatter does - stopped it matching, and a background tab enumerator
+// was told to drop tabs for activeTab. That advice breaks the extension. Both
+// directions are asserted: the pair must AGREE, and the narrowable case must
+// still fire, or the "fix" would just be muting the feature.
+const tabsCase = (js) => {
+  const d = mkdtempSync(join(tmpdir(), "wsl-"));
+  writeFileSync(join(d, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "Fmt", description: "Same extension, formatted two different ways, must get one answer.", icons: { 16: "i.png" }, permissions: ["tabs"] }));
+  writeFileSync(join(d, "app.js"), js);
+  return narrowedFrom(ledgerOf(d)).includes("tabs");
+};
+
+const ENUM_ONE = 'chrome.tabs.query({ windowType: "normal" }, (t) => setBadge(t.length));\n';
+const ENUM_WRAP = 'chrome.tabs.query({\n  windowType: "normal"\n}, (t) => setBadge(t.length));\n';
+check("enumerating tabs: no narrowing when the query is on one line", tabsCase(ENUM_ONE) === false);
+check("enumerating tabs: no narrowing when the SAME query is wrapped across lines",
+  tabsCase(ENUM_WRAP) === false, "a wrapped query object must not read as narrowable");
+check("and the two formattings agree", tabsCase(ENUM_ONE) === tabsCase(ENUM_WRAP));
+
+const ACT_ONE = 'chrome.action.onClicked.addListener(() => {\n  chrome.tabs.query({ active: true, currentWindow: true }, ([t]) => show(t.url));\n});\n';
+const ACT_WRAP = 'chrome.action.onClicked.addListener(() => {\n  chrome.tabs.query({\n    active: true,\n    currentWindow: true\n  }, ([t]) => show(t.url));\n});\n';
+check("active-tab-only: narrowing still fires on one line", tabsCase(ACT_ONE) === true);
+check("active-tab-only: narrowing still fires when wrapped", tabsCase(ACT_WRAP) === true,
+  "the fix must not silence the suggestion it exists to make");
+
+// The same one-line assumption let an `active: true` anywhere on the line cancel
+// an OBSERVER match. onActivated fires for tabs the user never touched, so the
+// two questions have to be asked separately.
+check("an observer is not excused by an active:true elsewhere on its line",
+  tabsCase('chrome.tabs.onActivated.addListener(() => chrome.tabs.query({ active: true }, log));\n') === false);
+
+// A query argument we cannot read is not evidence of narrowability. Honesty rule
+// 2: a claim we cannot support is worse than no claim, and the cost of guessing
+// here is a deleted permission.
+check("a query whose argument is a variable is not treated as narrowable",
+  tabsCase('const opts = buildQuery();\nchrome.tabs.query(opts, (t) => setBadge(t.length));\n') === false);
+check("a query whose object is spread is not treated as narrowable",
+  tabsCase('chrome.tabs.query({ ...opts, active: true }, (t) => setBadge(t.length));\n') === false);
+
 // storage declared while only web storage is used: the permission does nothing.
 const webStorage = mkdtempSync(join(tmpdir(), "wsl-"));
 writeFileSync(join(webStorage, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "WebStore", description: "Remembers your last search using the browser's own storage.", icons: { 16: "i.png" }, permissions: ["storage"] }));
@@ -244,6 +284,54 @@ check("storage declared but only localStorage used is flagged as removable",
 // And the same permission where it IS earned: chrome.storage is called.
 check("storage is NOT flagged when chrome.storage is actually used",
   !narrowedFrom(ledgerOf(join(here, "fixtures", "clean"))).includes("storage"));
+
+// A COMMENTED-OUT CALL IS NOT A CALL SITE. This is the Purple Potassium case
+// itself: the feature was deleted, the comment and the permission were left. The
+// tool used to grep raw lines and report the permission "used", missing the one
+// finding it exists to make.
+const permCase = (js, perm = "bookmarks") => {
+  const d = mkdtempSync(join(tmpdir(), "wsl-"));
+  writeFileSync(join(d, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "Cmt", description: "An extension whose only mention of a permission is in a comment.", icons: { 16: "i.png" }, permissions: [perm] }));
+  writeFileSync(join(d, "app.js"), js);
+  return permStatus(ledgerOf(d), perm);
+};
+check("a real call is used", permCase("chrome.bookmarks.getTree((t) => render(t));\n") === "used");
+check("a call left only in a line comment is UNUSED",
+  permCase("// we used to call chrome.bookmarks.getTree here, dropped in v2\nfunction render() {}\n") === "unused");
+check("a call left only in a block comment is UNUSED",
+  permCase("/* chrome.bookmarks.getTree() */\nfunction render() {}\n") === "unused");
+check("a call left only in a jsdoc block is UNUSED",
+  permCase("/**\n * @see chrome.bookmarks.getTree\n */\nfunction render() {}\n") === "unused");
+
+// The other direction, and it is the expensive one: blanking real code would
+// invent an "unused" verdict, and that advice deletes a permission the extension
+// needs. Each of these hides a comment marker somewhere a naive stripper trips.
+for (const [what, js] of [
+  ["a url in a string", 'const u = "https://a.com/x";\nchrome.bookmarks.getTree();\n'],
+  ["a url in a template literal", 'const u = `https://a.com/x`;\nchrome.bookmarks.getTree();\n'],
+  ["an apostrophe in a comment", "// don't delete this\nchrome.bookmarks.getTree();\n"],
+  ["a regex containing a slash", 'if (/a\\/b/.test(s)) chrome.bookmarks.getTree();\n'],
+  ["a regex matching a protocol", 's.replace(/https:\\/\\//, "");\nchrome.bookmarks.getTree();\n'],
+  ["division that is not a regex", "const r = a / b / c;\nchrome.bookmarks.getTree();\n"],
+  ["a comment marker inside a string", 'log("/* not a comment */");\nchrome.bookmarks.getTree();\n'],
+  ["code on the same line as a closed block comment", "/* note */ chrome.bookmarks.getTree();\n"],
+]) {
+  check(`a real call survives ${what}`, permCase(js) === "used");
+}
+
+// A mention inside a STRING stays "used" on purpose. It is ambiguous, and the
+// fail-safe direction for an ambiguous case is the one that does not tell a
+// developer to delete a permission.
+check("a mention inside a string is left as used, not accused",
+  permCase('const DOCS = "chrome.bookmarks reference";\n') === "used");
+
+// Comment bytes become spaces rather than disappearing, so every reported line
+// number still points at the right line.
+const shifted = mkdtempSync(join(tmpdir(), "wsl-"));
+writeFileSync(join(shifted, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "Line", description: "Checks that blanking comments does not move any reported line number.", icons: { 16: "i.png" }, permissions: ["bookmarks"] }));
+writeFileSync(join(shifted, "app.js"), "// one\n/* two\nthree */\nchrome.bookmarks.getTree();\n");
+check("blanking comments does not shift reported line numbers",
+  ledgerOf(shifted).ledger.find((l) => l.permission === "bookmarks").sites[0].line === 4);
 
 // A permission the tool has no pattern for must be UNKNOWN, never unused: a
 // false "unused" tells someone to delete something their extension needs.
