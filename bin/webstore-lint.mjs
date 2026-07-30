@@ -11,7 +11,7 @@
 // tool cannot resolve without seeing your store listing, and a CI gate that
 // cannot be satisfied locally gets switched off.
 
-import { lint, POLICY } from "../src/lint.mjs";
+import { lint, auditPermissions, POLICY } from "../src/lint.mjs";
 
 const args = process.argv.slice(2);
 const flags = new Set(args.filter((a) => a.startsWith("--")));
@@ -21,6 +21,10 @@ if (flags.has("--help") || (!target && !flags.has("--policy"))) {
   console.log(`webstore-lint - Chrome Web Store policy check, before you submit
 
   npx webstore-lint <extension-directory> [--json] [--quiet]
+  npx webstore-lint <extension-directory> --permissions
+                                        the permission ledger: what in your code
+                                        requires each permission, and where a
+                                        narrower one would have done
   npx webstore-lint --policy            list the policy data this build carries
 
 Policy data pulled ${POLICY.datasetPulledAt}. Enforcement of the ${POLICY.enforcedFrom} updates:
@@ -41,6 +45,70 @@ if (flags.has("--policy")) {
   for (const c of POLICY.changes2026) {
     console.log(`  ${c.inLivePolicyText ? "in live policy text" : "ANNOUNCED ONLY, not in any policy page"}  ${c.name}`);
   }
+  process.exit(0);
+}
+
+const wrapEarly = (s, indent = "    ", width = 92) => {
+  const words = String(s).split(/\s+/);
+  const lines = [];
+  let cur = indent;
+  for (const w of words) {
+    if (cur.trim() && cur.length + w.length + 1 > width) { lines.push(cur); cur = indent; }
+    cur += (cur.trim() ? " " : "") + w;
+  }
+  if (cur.trim()) lines.push(cur);
+  return lines.join("\n");
+};
+
+// --permissions: the ledger. This is the evidence a Chrome Web Store permission
+// justification has to rest on, and the comparative question ("could a narrower
+// permission have done this") that Purple Potassium is actually decided on.
+if (flags.has("--permissions")) {
+  const { audit: a, root, manifestError } = auditPermissions(target);
+  if (manifestError) { console.error(manifestError); process.exit(1); }
+
+  if (flags.has("--json")) { console.log(JSON.stringify(a, null, 2)); process.exit(0); }
+
+  const cite = POLICY.categories["excessive-permissions"];
+  console.log(`\nwebstore-lint permission ledger  ${root}`);
+  console.log(`manifest v${a.manifestVersion}, ${a.confidence.filesRead} JavaScript file(s) read as source\n`);
+
+  if (!a.ledger.length) console.log("  The manifest declares no named permissions.\n");
+
+  for (const l of a.ledger) {
+    const tag = l.status === "used" ? "used   " : l.status === "unused" ? "UNUSED " : "unknown";
+    console.log(`  ${tag} ${l.permission}${l.siteCount ? `  (${l.siteCount} call site${l.siteCount === 1 ? "" : "s"})` : ""}${l.where === "optional_permissions" ? "  [optional]" : ""}`);
+    if (l.disclosure) console.log(`          discloses: ${l.disclosure}`);
+    if (l.note) console.log(wrapEarly(l.note, "          "));
+    for (const s of l.sites.slice(0, 6)) console.log(`          ${s.file}:${s.line}  ${s.text}`);
+    if (l.siteCount > 6) console.log(`          ... and ${l.siteCount - 6} more`);
+    console.log("");
+  }
+
+  if (a.narrowings.length) {
+    console.log(`\nCould a narrower permission have done the job? Google's words:`);
+    console.log(wrapEarly(`"${cite.policyQuote}"`, "    "));
+    console.log(`    ${cite.policyUrl}\n`);
+    for (const n of a.narrowings) {
+      console.log(`  ${n.from}  ->  ${n.to}`);
+      console.log(wrapEarly(n.why, "      "));
+      for (const e of n.evidence.slice(0, 6)) console.log(`      ${e.file}${e.line ? ":" + e.line : ""}  ${e.text}`);
+      if (n.evidence.length > 6) console.log(`      ... and ${n.evidence.length - 6} more`);
+      console.log(wrapEarly(`This suggestion is WRONG if ${n.wrongIf}`, "      "));
+      console.log("");
+    }
+  }
+
+  if (a.disclosures.length) {
+    console.log(`\nPrivacy practices tab, from what the code actually touches:`);
+    for (const d of a.disclosures) console.log(`  ${d.permission.padEnd(16)} ${d.category}`);
+    console.log("");
+  }
+
+  console.log(wrapEarly(a.confidence.caveat, "  "));
+  for (const m of a.confidence.minified) console.log(`  minified, so call sites are unreliable: ${m.file} (longest line ${m.longestLine} chars)`);
+  for (const s of a.confidence.skipped) console.log(`  not read: ${s.path} (${s.why})`);
+  console.log("");
   process.exit(0);
 }
 

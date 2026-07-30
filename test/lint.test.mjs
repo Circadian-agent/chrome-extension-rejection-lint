@@ -11,7 +11,7 @@
 // rather than passing it. That is the s053 lesson - do not write an assertion
 // whose pass condition is also satisfied by the failure.
 
-import { lint } from "../src/lint.mjs";
+import { lint, auditPermissions } from "../src/lint.mjs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
@@ -107,6 +107,97 @@ writeFileSync(join(withDeps, "node_modules", "evil", "index.js"), 'eval("nope");
 const deps = lint(withDeps);
 check("node_modules is not scanned", deps.counts.fail === 0, `got: ${bySeverity(deps, "fail").join(", ")}`);
 check("and the skip is reported rather than silent", deps.skipped.some((s) => s.path.includes("node_modules")));
+
+// --- the permission ledger (src/audit.mjs) ----------------------------------
+//
+// THE LOAD-BEARING HALF HERE IS THE NEGATIVE CASE. A narrowing suggestion is
+// advice to DELETE a permission, so a false one breaks a working extension.
+// Every suggestion below is therefore tested twice: once where it must fire,
+// and once on code where firing would be wrong.
+
+const ledgerOf = (dir) => auditPermissions(dir).audit;
+const permStatus = (a, name) => a.ledger.find((l) => l.permission === name)?.status;
+const narrowedFrom = (a) => a.narrowings.map((n) => n.from);
+
+// tabs -> activeTab, where every call site reads the tab the user acted on.
+const gestureTabs = mkdtempSync(join(tmpdir(), "wsl-"));
+writeFileSync(join(gestureTabs, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "Gesture", description: "Acts on the tab you are looking at when you click the button.", icons: { 16: "i.png" }, permissions: ["tabs"] }));
+writeFileSync(join(gestureTabs, "app.js"), 'chrome.action.onClicked.addListener(() => {\n  chrome.tabs.query({ active: true, currentWindow: true }, ([t]) => console.log(t.url));\n});\n');
+const gt = ledgerOf(gestureTabs);
+check("tabs is reported used, with a call site", permStatus(gt, "tabs") === "used" && gt.ledger.find((l) => l.permission === "tabs").sites.length > 0);
+check("tabs -> activeTab is suggested when only the active tab is read", narrowedFrom(gt).includes("tabs"), `got: ${narrowedFrom(gt).join(", ")}`);
+check("and the suggestion carries the condition that makes it wrong",
+  gt.narrowings.filter((n) => n.from === "tabs").every((n) => n.wrongIf && n.evidence.length));
+
+// The same permission, where narrowing WOULD BREAK IT: observing tabs the user
+// has not touched. activeTab cannot do this, so the suggestion must not fire.
+const observerTabs = mkdtempSync(join(tmpdir(), "wsl-"));
+writeFileSync(join(observerTabs, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "Observer", description: "Counts how many tabs you have open and warns you above fifty.", icons: { 16: "i.png" }, permissions: ["tabs"] }));
+writeFileSync(join(observerTabs, "app.js"), 'chrome.tabs.onUpdated.addListener((id, info) => console.log(id, info.status));\n');
+check("tabs -> activeTab is NOT suggested when tabs are observed in the background",
+  !narrowedFrom(ledgerOf(observerTabs)).includes("tabs"), `got: ${narrowedFrom(ledgerOf(observerTabs)).join(", ")}`);
+
+// storage declared while only web storage is used: the permission does nothing.
+const webStorage = mkdtempSync(join(tmpdir(), "wsl-"));
+writeFileSync(join(webStorage, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "WebStore", description: "Remembers your last search using the browser's own storage.", icons: { 16: "i.png" }, permissions: ["storage"] }));
+writeFileSync(join(webStorage, "app.js"), 'localStorage.setItem("last", "x");\n');
+check("storage declared but only localStorage used is flagged as removable",
+  narrowedFrom(ledgerOf(webStorage)).includes("storage"));
+
+// And the same permission where it IS earned: chrome.storage is called.
+check("storage is NOT flagged when chrome.storage is actually used",
+  !narrowedFrom(ledgerOf(join(here, "fixtures", "clean"))).includes("storage"));
+
+// A permission the tool has no pattern for must be UNKNOWN, never unused: a
+// false "unused" tells someone to delete something their extension needs.
+const exotic = mkdtempSync(join(tmpdir(), "wsl-"));
+writeFileSync(join(exotic, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "Exotic", description: "Uses a permission this linter carries no pattern for at all.", icons: { 16: "i.png" }, permissions: ["someFuturePermission"] }));
+writeFileSync(join(exotic, "app.js"), 'console.log("hello");\n');
+check("an unmodelled permission is UNKNOWN, not unused", permStatus(ledgerOf(exotic), "someFuturePermission") === "unknown");
+
+// activeTab has no namespace, so a call-site count of zero is correct rather
+// than a finding. Reporting the narrow answer as unused would invert the advice.
+const active = mkdtempSync(join(tmpdir(), "wsl-"));
+writeFileSync(join(active, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "Active", description: "Reads the page you are on when you click the toolbar button.", icons: { 16: "i.png" }, permissions: ["activeTab"] }));
+writeFileSync(join(active, "app.js"), 'chrome.action.onClicked.addListener(() => {});\n');
+check("activeTab is never reported unused", permStatus(ledgerOf(active), "activeTab") === "used");
+
+// Minified code defeats call-site evidence. The audit must SAY so rather than
+// report a confident zero - an absence found in a bundle is not an absence.
+const bundled = mkdtempSync(join(tmpdir(), "wsl-"));
+writeFileSync(join(bundled, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "Bundled", description: "An extension shipped as a single minified bundle file.", icons: { 16: "i.png" }, permissions: ["bookmarks"] }));
+writeFileSync(join(bundled, "bundle.js"), "var a=1;".repeat(400) + "\n");
+const bundle = ledgerOf(bundled);
+check("minified code is detected", bundle.confidence.minified.length > 0);
+check("and the caveat says the unused verdict is not safe to act on",
+  /incomplete/i.test(bundle.confidence.caveat), bundle.confidence.caveat);
+
+// The bad fixture: unused permissions must appear as unused WITH the reason.
+const badLedger = ledgerOf(join(here, "fixtures", "bad"));
+check("bad fixture: bookmarks is reported unused", permStatus(badLedger, "bookmarks") === "unused");
+check("bad fixture: cookies is reported used, with evidence",
+  permStatus(badLedger, "cookies") === "used" && badLedger.ledger.find((l) => l.permission === "cookies").sites.every((s) => s.file && s.line > 0));
+check("bad fixture: <all_urls> is narrowed against the hosts the code names",
+  badLedger.narrowings.some((n) => /all_urls/.test(n.from) && n.to.includes("https://")));
+check("bad fixture: disclosure categories are derived from USED permissions only",
+  badLedger.disclosures.every((d) => permStatus(badLedger, d.permission) === "used"));
+
+// webRequest: suggest declarativeNetRequest only when it is actually used.
+// Declared-and-never-called is already "delete it", and printing both is the
+// doubled-up output that gets a linter muted.
+const wrUsed = mkdtempSync(join(tmpdir(), "wsl-"));
+writeFileSync(join(wrUsed, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "Blocker", description: "Blocks requests to a list of hosts you configure yourself.", icons: { 16: "i.png" }, permissions: ["webRequest"] }));
+writeFileSync(join(wrUsed, "app.js"), 'chrome.webRequest.onBeforeRequest.addListener(() => ({ cancel: true }), { urls: ["<all_urls>"] }, ["blocking"]);\n');
+check("webRequest -> declarativeNetRequest is suggested when webRequest is used",
+  narrowedFrom(ledgerOf(wrUsed)).includes("webRequest"));
+
+const wrUnused = mkdtempSync(join(tmpdir(), "wsl-"));
+writeFileSync(join(wrUnused, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "Stale", description: "Declares a request permission it no longer calls anywhere.", icons: { 16: "i.png" }, permissions: ["webRequest"] }));
+writeFileSync(join(wrUnused, "app.js"), 'console.log("nothing here");\n');
+const stale = ledgerOf(wrUnused);
+check("webRequest declared but unused says delete it, not migrate it",
+  permStatus(stale, "webRequest") === "unused" && !narrowedFrom(stale).includes("webRequest"),
+  `status=${permStatus(stale, "webRequest")} narrowings=${narrowedFrom(stale).join(", ")}`);
 
 console.log(`\nwebstore-lint: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

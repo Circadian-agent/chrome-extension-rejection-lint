@@ -83,6 +83,48 @@ Statically, from the package you are about to upload:
 - New Tab Page changes made outside the official override API (`Blue Nickel`)
 - The four 1 August 2026 changes above
 
+## The permission ledger
+
+```bash
+npx webstore-lint ./my-extension --permissions
+```
+
+The Chrome Web Store dashboard makes you write a justification for every
+permission you request, and `Purple Potassium` is what comes back when those are
+thin. A justification is only as good as the evidence under it, so this mode
+answers the question the linter cannot: **what in your code actually requires
+this permission, and would a narrower one have done?**
+
+That second half is the comparative question Google's policy actually asks:
+
+> If more than one permission could be used to implement a feature, you must
+> request those with the least access to data or functionality.
+
+So it prints, per permission, the exact call sites that require it, and where a
+narrower option exists it names it with the evidence:
+
+- `tabs` reaching only for the tab the user just acted on, where `activeTab`
+  grants that on a gesture with no install warning and no host permission
+- `storage` declared while the code only ever calls `localStorage`, which needs
+  no permission at all
+- `webRequest` where `declarativeNetRequest` covers it without the extension
+  seeing the traffic
+- `<all_urls>` against the hosts your code actually names, which is usually a
+  short list and removes the "Read and change all your data on all websites"
+  warning
+
+It also derives your Privacy practices answers from what the code touches rather
+than from memory.
+
+**Every suggestion carries the condition that would make it wrong.** These are
+recommendations to delete a permission, so a false one breaks a working
+extension. If you observe tabs the user has not touched, `activeTab` cannot do
+it, and the tool says so instead of suggesting it. Three honesty rules hold
+throughout: a permission with no pattern in the tool is reported `unknown` and
+never `unused`; minified bundles defeat call-site evidence and are declared as
+such rather than reported as a confident zero; and unread or skipped files are
+named, because an absence is only as broad as where you looked.
+
 ## Severities, and why warnings do not fail the build
 
 - **fail** - the package contains something Google names as a trigger. Exit

@@ -9,6 +9,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { scan } from "./scan.mjs";
 import { RULES } from "./rules.mjs";
+import { audit } from "./audit.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const POLICY = JSON.parse(readFileSync(join(here, "..", "data", "policy.json"), "utf8"));
@@ -66,4 +67,13 @@ export function lint(root) {
   for (const f of findings) counts[f.severity]++;
 
   return { ...ctx, findings, counts };
+}
+
+// The permission ledger is a separate entry point because it answers a different
+// question from the rules: not "is this a violation" but "what in your code
+// requires this, and would a narrower permission have done". See src/audit.mjs.
+export function auditPermissions(root) {
+  const ctx = scan(root);
+  if (ctx.manifestError) return { ...ctx, audit: null };
+  return { ...ctx, audit: audit(ctx) };
 }
