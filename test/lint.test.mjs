@@ -333,6 +333,68 @@ writeFileSync(join(shifted, "app.js"), "// one\n/* two\nthree */\nchrome.bookmar
 check("blanking comments does not shift reported line numbers",
   ledgerOf(shifted).ledger.find((l) => l.permission === "bookmarks").sites[0].line === 4);
 
+// SOME PERMISSIONS ARE EARNED BY THE MANIFEST WITH NO JAVASCRIPT AT ALL, and
+// missing that produced a false "unused" on the two that matter most. The
+// RECOMMENDED MV3 way to block requests is a static declarativeNetRequest
+// ruleset, which touches no chrome.* namespace anywhere - so we were telling ad
+// blockers to delete the permission that does their blocking. side_panel is the
+// same shape. unused-permissions is a FAIL, so a false one here deletes a
+// working feature.
+const manifestCase = (extra, perm, js = 'console.log("no chrome api needed");\n', files = {}) => {
+  const d = mkdtempSync(join(tmpdir(), "wsl-"));
+  writeFileSync(join(d, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "NoJs", description: "Uses a permission through the manifest rather than through any code.", icons: { 16: "i.png" }, permissions: [perm], ...extra }));
+  writeFileSync(join(d, "app.js"), js);
+  for (const [name, body] of Object.entries(files)) writeFileSync(join(d, name), body);
+  return {
+    audit: permStatus(ledgerOf(d), perm),
+    rule: lint(d).findings.some((f) => f.rule === "unused-permissions"),
+  };
+};
+
+const dnr = manifestCase({ declarative_net_request: { rule_resources: [{ id: "ruleset_1", enabled: true, path: "rules.json" }] } },
+  "declarativeNetRequest", undefined, { "rules.json": "[]" });
+check("a static declarativeNetRequest ruleset counts as using the permission", dnr.audit === "used", dnr.audit);
+check("...and the unused-permissions rule does not fail it", dnr.rule === false);
+
+const sp = manifestCase({ side_panel: { default_path: "panel.html" } }, "sidePanel", undefined, { "panel.html": "<html></html>" });
+check("a side_panel.default_path counts as using the permission", sp.audit === "used", sp.audit);
+check("...and the unused-permissions rule does not fail it", sp.rule === false);
+
+// THE POSITIVE CONTROL, and it is the load-bearing one: manifest evidence must be
+// the ACTUAL configuration, not the permission excusing itself. Declared with no
+// ruleset and no code is still unused.
+const dnrBare = manifestCase({}, "declarativeNetRequest");
+check("declarativeNetRequest with NO ruleset and no code is still unused", dnrBare.audit === "unused", dnrBare.audit);
+const dnrEmpty = manifestCase({ declarative_net_request: { rule_resources: [] } }, "declarativeNetRequest");
+check("...and an EMPTY rule_resources array does not excuse it", dnrEmpty.audit === "unused", dnrEmpty.audit);
+const spBare = manifestCase({ side_panel: {} }, "sidePanel");
+check("side_panel with no default_path does not excuse the permission", spBare.audit === "unused", spBare.audit);
+
+// THE TWO HALVES OF THE TOOL MUST AGREE. audit.mjs produces the ledger and
+// unused-permissions produces the verdict, and they used to answer the same
+// question from different text: the rule read raw code, so a commented-out call
+// silenced it while the ledger reported unused. Assert AGREEMENT, not a verdict.
+const agree = (js, perm = "bookmarks", extra = {}) => {
+  const r = manifestCase(extra, perm, js);
+  return (r.audit === "unused") === (r.rule === true);
+};
+check("halves agree on a real call", agree("chrome.bookmarks.getTree();\n"));
+check("halves agree on a call left only in a comment", agree("// chrome.bookmarks.getTree()\nfunction f() {}\n"));
+check("halves agree on a call left only in a block comment", agree("/* chrome.bookmarks.getTree() */\n"));
+check("halves agree on a static declarativeNetRequest ruleset",
+  agree('console.log("x");\n', "declarativeNetRequest", { declarative_net_request: { rule_resources: [{ id: "r", enabled: true, path: "rules.json" }] } }));
+
+// And the rule must not have become trigger-happy: it is a FAIL, so the same
+// awkward-code controls apply to it as to the ledger.
+for (const [what, js] of [
+  ["a url in a string", 'const u = "https://a.com/x";\nchrome.bookmarks.getTree();\n'],
+  ["an apostrophe in a comment", "// don't delete this\nchrome.bookmarks.getTree();\n"],
+  ["a regex containing a slash", 'if (/a\\/b/.test(s)) chrome.bookmarks.getTree();\n'],
+  ["a comment marker inside a string", 'log("/* not a comment */");\nchrome.bookmarks.getTree();\n'],
+]) {
+  check(`unused-permissions does not fail a real call behind ${what}`, manifestCase({}, "bookmarks", js).rule === false);
+}
+
 // The host narrowing reads the code for hosts too, so a documentation URL in a
 // comment used to be offered as a host to allow-list. The suggested list is what
 // a developer pastes into their manifest, so padding it with chromium.org is both

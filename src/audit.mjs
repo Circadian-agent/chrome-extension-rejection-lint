@@ -27,11 +27,14 @@
 //      bundled code defeats call-site analysis, and when that is detected the
 //      pass says so rather than reporting a confident zero.
 
-import { isCode } from "./scan.mjs";
+import { isCode, codeView } from "./scan.mjs";
 
-// Permission -> the namespaces whose presence proves it is used. Kept in this
-// file rather than shared with rules.mjs because this pass needs the call sites
-// and rules.mjs only needs a boolean, and the two drift for good reasons.
+// Permission -> the namespaces whose presence proves it is used. rules.mjs keeps
+// its own copy because it needs only a boolean while this pass needs the call
+// sites. THAT SPLIT HAS COST US TWICE (declaredHosts, and the manifest-evidence
+// gap below), so if you touch either table, run both halves against the same
+// fixture and check they agree. Anything that can be answered once is shared -
+// see codeView in scan.mjs.
 export const PERMISSION_API = {
   cookies: ["chrome.cookies", "browser.cookies"],
   history: ["chrome.history", "browser.history"],
@@ -64,6 +67,32 @@ export const PERMISSION_API = {
   declarativeNetRequest: ["chrome.declarativeNetRequest", "browser.declarativeNetRequest"],
 };
 
+// SOME PERMISSIONS ARE EARNED BY THE MANIFEST, WITH NO JAVASCRIPT AT ALL, and
+// missing that produced a false "unused" on the two below - advice that would
+// have broken the very feature the permission exists for.
+//
+// declarativeNetRequest is the headline case: the RECOMMENDED MV3 way to block
+// requests is a static ruleset declared under `declarative_net_request`, and an
+// extension doing exactly that touches no chrome.* namespace anywhere. We were
+// telling ad blockers to delete the permission that does their blocking. sidePanel
+// is the same shape - `side_panel.default_path` is a complete, working
+// configuration on its own.
+//
+// Each entry returns the human description of the evidence, or null. A call site
+// is better evidence when it exists, so this is only consulted when there is none.
+export const MANIFEST_EVIDENCE = {
+  declarativeNetRequest: (m) => {
+    const rs = m.declarative_net_request?.rule_resources;
+    if (!Array.isArray(rs) || !rs.length) return null;
+    const paths = rs.map((r) => r?.path).filter(Boolean);
+    return `declarative_net_request.rule_resources declares ${rs.length} static ruleset(s)${paths.length ? ` (${paths.join(", ")})` : ""}. A static ruleset is the recommended MV3 way to block or modify requests and needs no JavaScript, so an absence of call sites is expected here rather than a finding.`;
+  },
+  sidePanel: (m) =>
+    m.side_panel?.default_path
+      ? `side_panel.default_path is set to ${m.side_panel.default_path}. That is a complete side panel configuration on its own, so an absence of call sites is expected here rather than a finding.`
+      : null,
+};
+
 // Which Chrome data-disclosure category a permission drags you into. Used to
 // answer the Privacy practices tab, which is where Purple Nickel is decided.
 const DISCLOSURE_CATEGORY = {
@@ -84,99 +113,6 @@ const DISCLOSURE_CATEGORY = {
 };
 
 const BROAD = new Set(["<all_urls>", "*://*/*", "http://*/*", "https://*/*", "*://*/", "file:///*"]);
-
-// Blank out comments, keeping every other byte where it was.
-//
-// WHY THIS EXISTS: a commented-out call used to count as a call site, so an
-// extension that DELETED its chrome.bookmarks code and left "// we used to call
-// chrome.bookmarks.getTree here" behind was reported as using bookmarks. That is
-// exactly Google's Purple Potassium case - permission declared, nothing left that
-// needs it - and the tool's headline verdict missed it.
-//
-// Comment bytes become spaces rather than being removed, so offsets, line counts
-// and therefore every reported line number are unchanged.
-//
-// THE FAIL-SAFE DIRECTION IS DELIBERATE. Blanking real code would invent an
-// "unused" verdict, and that advice deletes a permission the extension needs -
-// the expensive direction. So blanking happens ONLY from a comment opener found
-// in normal state: strings and template literals are tracked and skipped, and an
-// ambiguous slash is resolved toward "not a comment". A missed comment leaves a
-// permission reading "used", which is a miss rather than a false accusation.
-export function stripComments(text) {
-  const out = text.split("");
-  const n = text.length;
-  let i = 0;
-  let prev = ""; // last significant (non-space) character, for the regex/divide call
-  const blank = (a, b) => {
-    for (let k = a; k < b && k < n; k++) if (out[k] !== "\n") out[k] = " ";
-  };
-
-  while (i < n) {
-    const c = text[i];
-    const d = text[i + 1];
-
-    if (c === "/" && d === "/") {
-      let j = i + 2;
-      while (j < n && text[j] !== "\n") j++;
-      blank(i, j);
-      i = j;
-      continue;
-    }
-    if (c === "/" && d === "*") {
-      let j = text.indexOf("*/", i + 2);
-      j = j === -1 ? n : j + 2;
-      blank(i, j);
-      i = j;
-      continue;
-    }
-    if (c === '"' || c === "'") {
-      let j = i + 1;
-      while (j < n && text[j] !== c && text[j] !== "\n") j += text[j] === "\\" ? 2 : 1;
-      i = j + 1;
-      prev = c;
-      continue;
-    }
-    if (c === "`") {
-      let j = i + 1;
-      while (j < n && text[j] !== "`") j += text[j] === "\\" ? 2 : 1;
-      i = j + 1;
-      prev = c;
-      continue;
-    }
-    // A slash here is either division or a regex literal. Only the regex case
-    // needs skipping, and guessing wrong that way merely means a comment inside
-    // the span is missed - the safe direction. An unescaped // cannot appear
-    // inside a regex literal anyway, because it would have closed it.
-    if (c === "/" && (prev === "" || "=(,:[!&|?{};+-*%~^<>return".includes(prev))) {
-      let j = i + 1;
-      let cls = false;
-      while (j < n && text[j] !== "\n") {
-        const e = text[j];
-        if (e === "\\") { j += 2; continue; }
-        if (e === "[") cls = true;
-        else if (e === "]") cls = false;
-        else if (e === "/" && !cls) break;
-        j++;
-      }
-      i = j + 1;
-      prev = "/";
-      continue;
-    }
-    if (!/\s/.test(c)) prev = c;
-    i++;
-  }
-  return out.join("");
-}
-
-// The same files with comments blanked, computed once. Every call-site question
-// in this pass is about code, not prose.
-function codeView(files) {
-  return files.map((f) => {
-    if (!isCode(f)) return f;
-    const text = stripComments(f.text);
-    return { ...f, text, lines: text.split("\n") };
-  });
-}
 
 // Find every line where a namespace is touched. Whole-file includes() cannot do
 // this: it answers "somewhere" and a justification needs "here".
@@ -389,6 +325,21 @@ export function audit({ manifest, files, skipped }) {
       ledger.push({ permission: name, where, status: "used", sites: [],
         note: "activeTab is granted by a user gesture and has no namespace of its own, so it has no call sites by construction. It is the narrow answer, not a finding." });
       continue;
+    }
+    // No call sites is not the same as no evidence: some permissions are earned
+    // by the manifest alone. Consulted only when the code shows nothing, because
+    // a call site is the better evidence when it exists.
+    if (!sites.length) {
+      const evidence = MANIFEST_EVIDENCE[name]?.(manifest) || null;
+      if (evidence) {
+        ledger.push({
+          permission: name, where, status: "used", sites: [], siteCount: 0,
+          disclosure: DISCLOSURE_CATEGORY[name] || null,
+          evidencedBy: "manifest",
+          note: evidence,
+        });
+        continue;
+      }
     }
     ledger.push({
       permission: name, where,

@@ -128,3 +128,99 @@ export function grepAcross(files, re, filter = () => true) {
 
 export const isCode = (f) => [".js", ".mjs", ".cjs", ".ts", ".jsx", ".tsx"].includes(f.ext);
 export const isMarkup = (f) => [".html", ".htm"].includes(f.ext);
+
+// Blank out comments, keeping every other byte where it was.
+//
+// WHY THIS LIVES HERE rather than in the one rule that first needed it: a
+// commented-out call used to count as a call site, so an extension that DELETED
+// its chrome.bookmarks code and left "// we used to call chrome.bookmarks.getTree
+// here" behind was reported as USING bookmarks. That is Google's Purple Potassium
+// case exactly. Two separate places ask that question - audit.mjs for the ledger
+// and the unused-permissions rule for the verdict - and when they disagreed the
+// tool contradicted itself. The drift between two copies has already been a bug
+// here once (see declaredHosts), so this is shared.
+//
+// Comment bytes become SPACES rather than being removed, so offsets, line counts
+// and therefore every reported line number are unchanged.
+//
+// THE FAIL-SAFE DIRECTION IS DELIBERATE. Blanking real code would invent an
+// "unused" verdict, and that advice deletes a permission the extension needs -
+// the expensive direction. So blanking happens ONLY from a comment opener found
+// in normal state: strings and template literals are tracked and skipped, and an
+// ambiguous slash is resolved toward "not a comment". A missed comment leaves a
+// permission reading "used", which is a miss rather than a false accusation.
+export function stripComments(text) {
+  const out = text.split("");
+  const n = text.length;
+  let i = 0;
+  let prev = ""; // last significant (non-space) character, for the regex/divide call
+  const blank = (a, b) => {
+    for (let k = a; k < b && k < n; k++) if (out[k] !== "\n") out[k] = " ";
+  };
+
+  while (i < n) {
+    const c = text[i];
+    const d = text[i + 1];
+
+    if (c === "/" && d === "/") {
+      let j = i + 2;
+      while (j < n && text[j] !== "\n") j++;
+      blank(i, j);
+      i = j;
+      continue;
+    }
+    if (c === "/" && d === "*") {
+      let j = text.indexOf("*/", i + 2);
+      j = j === -1 ? n : j + 2;
+      blank(i, j);
+      i = j;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      let j = i + 1;
+      while (j < n && text[j] !== c && text[j] !== "\n") j += text[j] === "\\" ? 2 : 1;
+      i = j + 1;
+      prev = c;
+      continue;
+    }
+    if (c === "`") {
+      let j = i + 1;
+      while (j < n && text[j] !== "`") j += text[j] === "\\" ? 2 : 1;
+      i = j + 1;
+      prev = c;
+      continue;
+    }
+    // A slash here is either division or a regex literal. Only the regex case
+    // needs skipping, and guessing wrong that way merely means a comment inside
+    // the span is missed - the safe direction. An unescaped // cannot appear
+    // inside a regex literal anyway, because it would have closed it.
+    if (c === "/" && (prev === "" || "=(,:[!&|?{};+-*%~^<>return".includes(prev))) {
+      let j = i + 1;
+      let cls = false;
+      while (j < n && text[j] !== "\n") {
+        const e = text[j];
+        if (e === "\\") { j += 2; continue; }
+        if (e === "[") cls = true;
+        else if (e === "]") cls = false;
+        else if (e === "/" && !cls) break;
+        j++;
+      }
+      i = j + 1;
+      prev = "/";
+      continue;
+    }
+    if (!/\s/.test(c)) prev = c;
+    i++;
+  }
+  return out.join("");
+}
+
+// The same files with comments blanked, computed once. Every call-site question
+// is about code, not prose. Non-code files are passed through untouched.
+export function codeView(files) {
+  return files.map((f) => {
+    if (!isCode(f)) return f;
+    const text = stripComments(f.text);
+    return { ...f, text, lines: text.split("\n") };
+  });
+}

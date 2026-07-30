@@ -18,7 +18,8 @@
 // is worth less than none. When in doubt a rule warns and says what a human
 // must check.
 
-import { grep, grepAcross, isCode, isMarkup } from "./scan.mjs";
+import { grep, grepAcross, isCode, isMarkup, codeView } from "./scan.mjs";
+import { MANIFEST_EVIDENCE } from "./audit.mjs";
 
 // Permissions whose presence means USER data is in play. Used by the disclosure
 // and privacy-policy rules. Kept explicit rather than inferred: a list you can
@@ -170,11 +171,20 @@ export const RULES = [
     run({ manifest, files }) {
       if (!manifest) return [];
       const declared = [...(manifest.permissions || []), ...(manifest.optional_permissions || [])];
-      const code = files.filter(isCode).map((f) => f.text).join("\n");
+      // Comments blanked first. A permission whose only trace is "// we used to
+      // call chrome.bookmarks.getTree here" is the COMMONEST real form of an
+      // unused permission - the feature was deleted and the note left behind -
+      // and reading raw text made this rule blind to exactly that case while
+      // audit.mjs reported it. Shared with audit.mjs so the two cannot disagree.
+      const code = codeView(files).filter(isCode).map((f) => f.text).join("\n");
       const unused = declared.filter((p) => {
         const apis = PERMISSION_API[p];
         if (!apis) return false; // unknown permission: say nothing rather than guess
-        return !apis.some((a) => code.includes(a));
+        if (apis.some((a) => code.includes(a))) return false;
+        // Some permissions are earned by the manifest with no JavaScript at all
+        // (a declarativeNetRequest static ruleset, a side_panel path). This rule
+        // is a FAIL, so a false one here deletes a working feature.
+        return !MANIFEST_EVIDENCE[p]?.(manifest);
       });
       if (!unused.length) return [];
       return [finding({
