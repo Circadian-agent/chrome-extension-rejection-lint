@@ -15,6 +15,7 @@ import { lint, auditPermissions } from "../src/lint.mjs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -683,6 +684,88 @@ const mineLive = pkg({ "manifest.json": { manifest_version: 3, name: "M", versio
 const mineDead = pkg({ "manifest.json": { manifest_version: 3, name: "M", version: "1.0.0", description: "Runs a small background task while you browse the web pages.", icons: { 16: "i.png" } }, "sw.js": '// we removed the CoinHive experiment in 2019\n' });
 check("comments: a live miner still fails", bySeverity(lint(mineLive), "fail").includes("crypto-mining"));
 check("comments: a miner mentioned only in a comment is not an accusation", !ids(lint(mineDead)).includes("crypto-mining"));
+
+// --- s077: the CLI, which had never been audited ----------------------------
+//
+// THIS SECTION SPAWNS THE BINARY, because argument parsing and exit codes cannot
+// be reached from lint(). The exit code is what a CI gate reads, so a wrong one
+// is the tool lying to a machine that cannot argue back.
+//
+// A NOTE ON HOW THESE ARE MEASURED. The first version of this check read the
+// exit code through a pipe and got the exit code of `grep` every time, which
+// reported 0 for runs that had exited 1. spawnSync gives the process's own
+// status with nothing in between.
+
+const BIN = join(here, "..", "bin", "webstore-lint.mjs");
+const run = (...argv) => {
+  const r = spawnSync(process.execPath, [BIN, ...argv], { encoding: "utf8" });
+  return { code: r.status, out: r.stdout + r.stderr };
+};
+
+const cleanDir = join(here, "fixtures", "clean");
+const badDir = join(here, "fixtures", "bad");
+
+// The controls come FIRST here, because every assertion below narrows what the
+// CLI accepts, and a narrowing that breaks ordinary use is a worse bug than the
+// one it fixes.
+check("cli: a clean extension exits 0", run(cleanDir).code === 0);
+check("cli: a failing extension exits 1", run(badDir).code === 1);
+check("cli: --json still exits 1 on a failure", run(badDir, "--json").code === 1);
+check("cli: --json emits parseable json", (() => { try { JSON.parse(run(cleanDir, "--json").out); return true; } catch { return false; } })());
+check("cli: --quiet is accepted", run(cleanDir, "--quiet").code === 0);
+check("cli: --permissions is accepted", run(cleanDir, "--permissions").code === 0);
+check("cli: --policy is accepted", run("--policy").code === 0);
+check("cli: --help exits 0", run("--help").code === 0);
+check("cli: no arguments is a usage error", run().code === 2);
+
+// An unknown flag was silently dropped, so `--permission` - one letter from the
+// flagship ledger flag - ran the ordinary lint and exited 0. The user reads
+// "0 failing" as an answer to the question they asked, and it is an answer to a
+// different one.
+{
+  const r = run(cleanDir, "--permission");
+  check("cli: a typo'd flag is refused rather than ignored", r.code === 2, `exit ${r.code}`);
+  check("cli: ...and the message names the flag it did not understand", /--permission\b/.test(r.out));
+  check("cli: ...and lists the flags it does understand", /--permissions/.test(r.out) && /--privacy-policy/.test(r.out));
+}
+// THE CONTROL: the correctly spelled flag must still work, or this is a
+// regression wearing a fix's clothes. Covered by the --permissions check above,
+// and pinned here against the exact string the refusal path prints.
+check("cli: the real --permissions flag is not caught by the unknown-flag check",
+  !/unknown flag/.test(run(cleanDir, "--permissions").out));
+
+// --privacy-policy with nothing after it ran the lint, skipped the only network
+// check in the tool, and exited 0. The user asked for their policy page to be
+// fetched and was told nothing was wrong.
+{
+  const r = run(cleanDir, "--privacy-policy");
+  check("cli: --privacy-policy with no url is refused", r.code === 2, `exit ${r.code}`);
+  check("cli: ...and says the check was not run", /NOT run/.test(r.out));
+}
+// The control: a url that IS supplied must still be consumed as the flag's
+// value and not mistaken for the directory. That trap is why VALUED exists.
+check("cli: a supplied url is not linted as a directory",
+  !/no manifest\.json/.test(run(cleanDir, "--privacy-policy", "https://example.com/privacy").out));
+
+// "no manifest.json in this directory" was printed for a path that is not a
+// directory and for one that does not exist, which sends a developer looking for
+// a file inside a folder that was never there.
+{
+  const missing = run(join(here, "fixtures", "no-such-directory"));
+  check("cli: a path that does not exist says so", /there is nothing at/.test(missing.out), missing.out.split("\n").find((l) => /FAIL/.test(l)));
+  check("cli: ...and still exits 1", missing.code === 1);
+  const atManifest = run(join(cleanDir, "manifest.json"));
+  check("cli: being pointed at manifest.json says to point at the directory",
+    /is the manifest itself/.test(atManifest.out), atManifest.out.split("\n").find((l) => /FAIL/.test(l)));
+  const atFile = run(join(cleanDir, "content.js"));
+  check("cli: being pointed at some other file says it is a file",
+    /is a file, not an unpacked extension directory/.test(atFile.out));
+  // THE CONTROL: a real directory that genuinely lacks a manifest must keep the
+  // original message, which is the accurate one for that case.
+  const emptyDir = mkdtempSync(join(tmpdir(), "wsl-"));
+  check("cli: a real directory with no manifest keeps the original message",
+    /no manifest\.json in this directory/.test(run(emptyDir).out));
+}
 
 console.log(`\nwebstore-lint: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

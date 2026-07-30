@@ -28,12 +28,40 @@ const flags = new Set(args.filter((a) => a.startsWith("--")));
 // as a directory and reports that manifest.json is missing - a confusing failure
 // that blames the wrong argument.
 const VALUED = new Set(["--privacy-policy"]);
+const KNOWN = new Set(["--help", "--json", "--quiet", "--policy", "--permissions", ...VALUED]);
+
+// A FLAG WE DO NOT RECOGNISE IS AN ERROR, NOT SILENCE. Unknown flags used to be
+// dropped on the floor, so `--permission` - a one-letter slip away from the
+// flagship `--permissions` ledger - ran the ordinary lint instead and exited 0.
+// The user reads "0 failing" and believes they were told something about the
+// report they asked for. This is scan.mjs's own rule about silent skips applied
+// to the argument list: a tool that says "clean" about a question it never
+// answered is worse than one that refuses.
+const unknown = [...flags].filter((f) => !KNOWN.has(f));
+if (unknown.length) {
+  console.error(`unknown flag${unknown.length > 1 ? "s" : ""}: ${unknown.join(", ")}`);
+  console.error(`known flags: ${[...KNOWN].sort().join(", ")}`);
+  process.exit(2);
+}
+
 const valueOf = (flag) => {
   const i = args.indexOf(flag);
   if (i < 0) return null;
   const v = args[i + 1];
   return v && !v.startsWith("--") ? v : null;
 };
+
+// Same reasoning, one level down: `--privacy-policy` with no url behind it USED
+// TO RUN THE LINT AND EXIT 0, having quietly skipped the only network check in
+// the tool. The user explicitly asked for their policy page to be fetched and
+// was told nothing had gone wrong.
+for (const f of VALUED) {
+  if (flags.has(f) && !valueOf(f)) {
+    console.error(`${f} needs a url after it, and the check was NOT run.`);
+    console.error(`  webstore-lint ./my-extension ${f} https://example.com/privacy`);
+    process.exit(2);
+  }
+}
 const consumed = new Set();
 for (const f of VALUED) {
   const i = args.indexOf(f);

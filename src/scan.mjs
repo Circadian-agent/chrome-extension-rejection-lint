@@ -61,7 +61,21 @@ export function scan(root) {
   let manifest = null;
   let manifestError = null;
   if (!existsSync(manifestPath)) {
-    manifestError = "no manifest.json in this directory";
+    // NAME THE ACTUAL PROBLEM. "no manifest.json in this directory" was printed
+    // for a path that is not a directory and for a path that does not exist at
+    // all, which sends someone to look for a file in a folder that was never
+    // there - the same shape of misdiagnosis as measuring the length of an
+    // unresolved __MSG_ placeholder. Pointing at manifest.json itself is the
+    // commonest of these and the message now says so outright.
+    let st = null;
+    try { st = statSync(root); } catch { /* below */ }
+    manifestError = !st
+      ? `there is nothing at ${root}`
+      : st.isDirectory()
+        ? "no manifest.json in this directory"
+        : /(^|[\\/])manifest\.json$/i.test(root)
+          ? `${root} is the manifest itself. Point webstore-lint at the directory that contains it.`
+          : `${root} is a file, not an unpacked extension directory`;
   } else {
     try {
       manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
