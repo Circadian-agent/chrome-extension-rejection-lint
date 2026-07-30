@@ -61,7 +61,9 @@ export function annotation(f, e) {
   const cite = f.citation?.notificationIds?.length
     ? ` [${f.citation.notificationIds.join(", ")}]`
     : "";
-  const body = [f.detail, f.citation?.policyUrl].filter(Boolean).join("\n");
+  // Google's policy page first, because it is the authority; the explainer
+  // second, because it is what the codename actually means and how to fix it.
+  const body = [f.detail, f.citation?.policyUrl, f.citationUrl].filter(Boolean).join("\n");
   return `::${level} ${props.join(",")}::${encData(`${f.title}${cite}\n${body}`)}`;
 }
 
@@ -112,8 +114,12 @@ export function summary(result, policy) {
       .filter(Boolean)
       .join(" ");
     const more = (f.evidence || []).length > 3 ? ` +${f.evidence.length - 3}` : "";
+    // The codename links to Google, who decide; "explained" links to our page
+    // for that exact codename. Both, never one instead of the other - replacing
+    // the authority with ourselves would be the wrong trade in a compliance tool.
     const cite = f.citation?.notificationIds?.length
-      ? `[${f.citation.notificationIds.join(", ")}](${f.citation.policyUrl})`
+      ? `[${f.citation.notificationIds.join(", ")}](${f.citation.policyUrl})` +
+        (f.citationUrl ? ` - [explained](${f.citationUrl})` : "")
       : "";
     // A pipe inside a cell would start a new column and shear the table.
     const cell = (s) => String(s).replace(/\|/g, "\\|").replace(/\n/g, " ");

@@ -14,6 +14,38 @@ import { audit } from "./audit.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 export const POLICY = JSON.parse(readFileSync(join(here, "..", "data", "policy.json"), "utf8"));
 
+const EXPLAINER_BASE = "https://circadian-agent.com/research/chrome-rejections/";
+
+const kebab = (s) =>
+  String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+
+// THE SLUG RULE IS NOT UNIFORM AND MUST NOT BE GUESSED FROM THE CODENAME.
+//
+// A category carrying ONE notification id lives at that id: Blue Argon is at
+// /blue-argon. A category carrying SEVERAL lives at its TITLE instead: Blue
+// Copper, Blue Lithium, Blue Magnesium and Blue Zinc are all at
+// /prohibited-products, because publishing four pages with identical bodies is
+// the thing search engines actually penalise.
+//
+// So kebab(notificationId) is right for 23 of the 36 ids and WRONG for the
+// other 13. A dead link in a linter's output is worse than no link at all: the
+// tool is then visibly wrong in front of somebody who is already having a bad
+// day, which is how a tool gets muted. test/explainer.test.mjs pins every one
+// of the 27 urls, and a live check confirmed all 27 resolve.
+//
+// This mirrors slugFor() in services/storefront/lib/chrome-rejections.ts. The
+// two read the same category data so they cannot disagree about which
+// categories exist, only about this rule - which is exactly what the suite
+// checks, by asserting the two implementations AGREE on all 27.
+export function pageUrlFor(category) {
+  if (!category?.notificationIds?.length) return null;
+  const slug =
+    category.notificationIds.length === 1
+      ? kebab(category.notificationIds[0])
+      : kebab(category.title);
+  return slug ? EXPLAINER_BASE + slug : null;
+}
+
 export function lint(root) {
   const ctx = scan(root);
 
@@ -27,6 +59,7 @@ export function lint(root) {
         detail: "Point webstore-lint at the directory holding manifest.json, or at the unzipped package.",
         evidence: [],
         citation: null,
+        citationUrl: null,
       }],
       counts: { fail: 1, warn: 0, info: 0 },
     };
@@ -48,14 +81,21 @@ export function lint(root) {
         detail: "This is a bug in webstore-lint, not in your extension. Please report it with the manifest that triggered it.",
         evidence: [],
         citation: null,
+        citationUrl: null,
       });
       continue;
     }
     for (const f of produced) {
+      const citation = rule.category ? POLICY.categories[rule.category] || null : null;
       findings.push({
         rule: rule.id,
         ...f,
-        citation: rule.category ? POLICY.categories[rule.category] || null : null,
+        citation,
+        // Attached HERE, next to the citation it is derived from, so every
+        // surface gets it from one place: the text renderer, --json, and the
+        // GitHub Action, which reads --json and would otherwise have to
+        // re-implement the slug rule and drift from it.
+        citationUrl: pageUrlFor(citation),
         change: rule.change ? POLICY.changes2026.find((c) => c.name === rule.change) || null : null,
       });
     }

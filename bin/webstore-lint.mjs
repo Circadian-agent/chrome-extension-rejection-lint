@@ -17,7 +17,7 @@
 // tool cannot resolve without seeing your store listing, and a CI gate that
 // cannot be satisfied locally gets switched off.
 
-import { lint, auditPermissions, POLICY } from "../src/lint.mjs";
+import { lint, auditPermissions, POLICY, pageUrlFor } from "../src/lint.mjs";
 import { checkPolicyUrl } from "../src/privacy.mjs";
 
 const args = process.argv.slice(2);
@@ -183,9 +183,15 @@ const result = lint(target);
 if (policyUrl && !result.manifestError) {
   const extra = await checkPolicyUrl(policyUrl);
   for (const f of extra) {
+    // These findings are built here rather than in lint(), so they need the same
+    // two derived fields attached by the same rule. A finding that reaches the
+    // renderer without citationUrl silently loses its explainer link, and the
+    // only reader who would notice is the one whose privacy policy failed.
+    const citation = f.category ? POLICY.categories[f.category] || null : null;
     result.findings.push({
       ...f,
-      citation: f.category ? POLICY.categories[f.category] || null : null,
+      citation,
+      citationUrl: pageUrlFor(citation),
       change: null,
     });
     result.counts[f.severity]++;
@@ -226,6 +232,12 @@ if (!result.findings.length) {
   for (const f of result.findings) {
     console.log(`${MARK[f.severity]}  ${f.title}`);
     console.log(`      rule ${f.rule}${f.citation ? `  |  ${f.citation.notificationIds.join(", ")}  |  ${f.citation.title}` : ""}`);
+    // ONE LINE, ALWAYS PRINTED, INCLUDING UNDER --quiet. This output is the
+    // artifact that travels: a developer pastes it into an issue, a forum
+    // thread or a question, and until now nothing in it said what produced it
+    // or where to read more. The codename is the exact phrase a rejected
+    // developer searches for, and this is the page answering it.
+    if (f.citationUrl) console.log(`      explained: ${f.citationUrl}`);
     if (f.detail) console.log(wrap(f.detail, "      "));
     for (const e of (f.evidence || []).slice(0, 8)) {
       // Not all evidence is a line in a file. The privacy policy check's evidence
@@ -260,6 +272,7 @@ const { fail, warn, info } = result.counts;
 console.log(`${fail} failing, ${warn} needing your judgement, ${info} informational`);
 console.log(
   "This reads your package only. Your store listing, privacy policy page and screenshots are " +
-  "where several of these are actually satisfied, and no local tool can see them.\n",
+  "where several of these are actually satisfied, and no local tool can see them.",
 );
+console.log("webstore-lint is free and open source: https://github.com/Circadian-agent/webstore-lint\n");
 process.exit(fail ? 1 : 0);
