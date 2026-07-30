@@ -199,5 +199,96 @@ check("webRequest declared but unused says delete it, not migrate it",
   permStatus(stale, "webRequest") === "unused" && !narrowedFrom(stale).includes("webRequest"),
   `status=${permStatus(stale, "webRequest")} narrowings=${narrowedFrom(stale).join(", ")}`);
 
+// --- the privacy policy URL check ------------------------------------------
+// The case this exists for is a REAL rejection: a developer's policy url 404'd
+// because the GitHub repo behind it was private, and Chrome DevRel diagnosed it
+// in one reply. Every case here is driven by an injected fetch, so the suite stays
+// offline and deterministic; the live behaviour is exercised separately below.
+
+const res = (status, body, url) => ({
+  ok: status >= 200 && status < 300,
+  status,
+  url,
+  text: async () => body,
+});
+// Deliberately the length a REAL policy page runs to. The first version of this
+// fixture was about 380 characters of text and tripped the "does not read like a
+// privacy policy" warning, which was the check being right and the fixture being
+// unrealistic: a genuine policy is never three sentences.
+const POLICY_PAGE =
+  "<h1>Privacy Policy</h1><p>This extension collects the following personal " +
+  "information and data: the url of the page you are currently on, which is " +
+  "stored in a cookie in your own browser. We do not share it with any third " +
+  "party, we do not sell it, and we do not use it for advertising of any kind. " +
+  "We process it locally on your device and retain it for thirty days, after " +
+  "which it is deleted automatically. You can clear it at any time from the " +
+  "extension options page, and you can contact us to have any information we " +
+  "hold about you deleted.</p><p>This notice describes what we collect, why we " +
+  "collect it, how long we keep it, who we share it with, and how you can ask " +
+  "us to delete it. It applies to the browser extension only and not to any " +
+  "other product. If we change what we collect we will update this page and " +
+  "note the date of the change at the top.</p>";
+
+const pol = async (url, fetchImpl) => (await import("../src/privacy.mjs")).checkPolicyUrl(url, { fetchImpl });
+const sev = (fs, s) => fs.filter((f) => f.severity === s);
+
+// A 404 must FAIL, and the detail must name the private-repo cause, because that
+// is the whole diagnostic value over "your url is broken".
+const gone = await pol("https://example.com/privacy", async () => res(404, "Not Found", "https://example.com/privacy"));
+check("privacy url: a 404 fails", sev(gone, "fail").length === 1 && /answers 404/.test(gone[0].title));
+check("privacy url: the 404 detail names the private-repo cause",
+  /private/i.test(gone[0].detail) && /PUBLIC/.test(gone[0].detail));
+check("privacy url: the 404 cites the disclosure category", gone[0].category === "udp-disclosure-policy");
+
+// AND THE PAIRED CASE, or every assertion above is satisfied by a check that
+// fails on everything: a real policy page must produce NO failure and NO warning.
+const good = await pol("https://example.com/privacy", async () => res(200, POLICY_PAGE, "https://example.com/privacy"));
+check("privacy url: a reachable policy page produces no failure",
+  sev(good, "fail").length === 0, JSON.stringify(good.map((f) => f.title)));
+check("privacy url: a reachable policy page produces no warning",
+  sev(good, "warn").length === 0, JSON.stringify(good.map((f) => f.title)));
+check("privacy url: a reachable policy page is reported as reachable",
+  good.some((f) => f.severity === "info" && /reachable/.test(f.title)));
+
+// 200 with a landing page rather than a policy: warn, never fail. The tool
+// cannot read a policy and must not pretend the distinction is certain.
+const shell = await pol("https://example.com/", async () => res(200, "<h1>Welcome</h1>", "https://example.com/"));
+check("privacy url: 200 with no policy text warns rather than fails",
+  sev(shell, "fail").length === 0 && sev(shell, "warn").some((f) => /does not read like/.test(f.title)));
+check("privacy url: the shallow check admits it can be wrong about JavaScript",
+  sev(shell, "warn").some((f) => /JavaScript/.test(f.detail)));
+
+// COULD NOT LOOK IS NOT NOT-THERE. A network error is a warning, not a failure.
+const dns = await pol("https://nope.invalid/privacy", async () => { throw new Error("getaddrinfo ENOTFOUND"); });
+check("privacy url: a network error warns and does not fail",
+  sev(dns, "fail").length === 0 && sev(dns, "warn").length === 1);
+check("privacy url: the network error says it is not evidence about the url",
+  /not the same as the address being broken/.test(dns[0].detail));
+
+// A url only the developer can open is a rejection waiting to happen, and no
+// request is made to it. The thrown fetch proves the request never happened: if
+// the host check were missing, this case would report a network error instead.
+const boom = async () => { throw new Error("this fetch must never run"); };
+for (const host of ["http://localhost:8080/p", "https://127.0.0.1/p", "https://10.0.0.5/p", "https://policy.internal/p"]) {
+  const r = await pol(host, boom);
+  check(`privacy url: ${host} fails without making a request`,
+    sev(r, "fail").length === 1 && /nobody outside your network/.test(r[0].title),
+    JSON.stringify(r.map((f) => f.title)));
+}
+
+const notUrl = await pol("privacy.html", boom);
+check("privacy url: a bare filename fails as not a url", sev(notUrl, "fail").length === 1 && /not a URL/.test(notUrl[0].title));
+
+const ftp = await pol("ftp://example.com/p", boom);
+check("privacy url: a non-http scheme fails", sev(ftp, "fail").length === 1 && /rather than https/.test(ftp[0].title));
+
+const insecure = await pol("http://example.com/privacy", async () => res(200, POLICY_PAGE, "http://example.com/privacy"));
+check("privacy url: plain http warns but does not fail",
+  sev(insecure, "fail").length === 0 && sev(insecure, "warn").some((f) => /plain http/.test(f.title)));
+
+const moved = await pol("https://example.com/privacy", async () => res(200, POLICY_PAGE, "https://www.example.com/privacy-policy"));
+check("privacy url: a redirect is reported as info, not a problem",
+  sev(moved, "fail").length === 0 && moved.some((f) => f.severity === "info" && /redirects/.test(f.title)));
+
 console.log(`\nwebstore-lint: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

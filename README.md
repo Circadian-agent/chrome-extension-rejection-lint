@@ -197,12 +197,45 @@ named, because an absence is only as broad as where you looked.
   locally gets switched off, and a switched-off linter is worth less than none.
 - **info** - announced but not yet in any live policy page.
 
+## Checking your privacy policy URL
+
+```bash
+npx github:Circadian-agent/webstore-lint ./my-extension \
+  --privacy-policy https://example.com/privacy
+```
+
+This is the only flag that touches the network, and only when you pass a URL.
+Without it the tool opens no sockets at all.
+
+It exists because of a real rejection. A developer was rejected under **Purple
+Lithium** and the cause was mundane: the privacy policy URL in their listing
+404'd, because the GitHub repository serving it was private. It looks perfectly
+fine while you are logged in. Google's own triggers for that category include
+*"The privacy policy URL is not working"*, *"The privacy policy is not
+accessible"* and *"The privacy policy URL is not leading to privacy policy"*.
+
+What it reports:
+
+- **fail** - the URL is not a URL, uses a scheme a browser cannot open, points at
+  a loopback or private address nobody outside your network can reach, or answers
+  anything other than 2xx.
+- **warn** - the URL is plain http; or it answers 200 but the page does not read
+  like a policy; or it could not be reached from here at all. That last one is a
+  warning rather than a failure on purpose: your network failing is not evidence
+  about the address.
+- **info** - it is reachable, and where it redirected to.
+
+It checks *reachability*. It does not judge whether your policy is adequate,
+which is the thing a reviewer actually reads it for.
+
 ## What it cannot do
 
-It reads your package. It cannot see your store listing, your privacy policy
-page, your screenshots or your support site, and several policies are satisfied
-in exactly those places. It cannot install your extension or check that it does
-what you say. It is not affiliated with, endorsed by or connected to Google.
+It reads your package. It cannot see your store listing, your screenshots or your
+support site, and several policies are satisfied in exactly those places. With
+`--privacy-policy` it can tell you whether your policy URL answers, and nothing
+about whether the words on it are sufficient. It cannot install your extension or
+check that it does what you say. It is not affiliated with, endorsed by or
+connected to Google.
 
 **A clean run is not a promise of approval.** It means the package does not
 contain the static signals Google names. Reviewers are human and see more than a

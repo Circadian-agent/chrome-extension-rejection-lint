@@ -18,10 +18,29 @@
 // cannot be satisfied locally gets switched off.
 
 import { lint, auditPermissions, POLICY } from "../src/lint.mjs";
+import { checkPolicyUrl } from "../src/privacy.mjs";
 
 const args = process.argv.slice(2);
 const flags = new Set(args.filter((a) => a.startsWith("--")));
-const target = args.find((a) => !a.startsWith("--"));
+
+// Flags that TAKE A VALUE. The value must be removed before the directory is
+// picked out of what is left, or `--privacy-policy https://x ./ext` lints the URL
+// as a directory and reports that manifest.json is missing - a confusing failure
+// that blames the wrong argument.
+const VALUED = new Set(["--privacy-policy"]);
+const valueOf = (flag) => {
+  const i = args.indexOf(flag);
+  if (i < 0) return null;
+  const v = args[i + 1];
+  return v && !v.startsWith("--") ? v : null;
+};
+const consumed = new Set();
+for (const f of VALUED) {
+  const i = args.indexOf(f);
+  if (i >= 0 && args[i + 1] && !args[i + 1].startsWith("--")) consumed.add(i + 1);
+}
+const target = args.find((a, i) => !a.startsWith("--") && !consumed.has(i));
+const policyUrl = valueOf("--privacy-policy");
 
 if (flags.has("--help") || (!target && !flags.has("--policy"))) {
   console.log(`webstore-lint - Chrome Web Store policy check, before you submit
@@ -31,6 +50,11 @@ if (flags.has("--help") || (!target && !flags.has("--policy"))) {
                                         the permission ledger: what in your code
                                         requires each permission, and where a
                                         narrower one would have done
+  webstore-lint <extension-directory> --privacy-policy <url>
+                                        additionally check that your listing's
+                                        privacy policy URL actually answers. This
+                                        is the ONLY flag that touches the network,
+                                        and only when you pass a url
   webstore-lint --policy                list the policy data this build carries
 
 Not on npm yet, so the one-liner is:
@@ -39,9 +63,9 @@ Not on npm yet, so the one-liner is:
 Policy data pulled ${POLICY.datasetPulledAt}. Enforcement of the ${POLICY.enforcedFrom} updates:
 ${POLICY.enforcementQuote}
 
-This tool reads your package. It cannot see your store listing, your privacy
-policy page or your screenshots, and it is not affiliated with Google. A clean
-run is not a promise of approval.`);
+This tool reads your package. Without --privacy-policy it makes no network
+request at all, and it cannot see your store listing or your screenshots. It is
+not affiliated with Google. A clean run is not a promise of approval.`);
   process.exit(flags.has("--help") ? 0 : 2);
 }
 
@@ -123,6 +147,30 @@ if (flags.has("--permissions")) {
 
 const result = lint(target);
 
+// The one network check, merged into the same findings list so it renders and
+// exits through the same path as everything else. Only reached when a url was
+// given, and skipped entirely when the manifest could not be read - there is no
+// point telling somebody their policy url is fine when we could not find their
+// extension.
+if (policyUrl && !result.manifestError) {
+  const extra = await checkPolicyUrl(policyUrl);
+  for (const f of extra) {
+    result.findings.push({
+      ...f,
+      citation: f.category ? POLICY.categories[f.category] || null : null,
+      change: null,
+    });
+    result.counts[f.severity]++;
+  }
+  const order = { fail: 0, warn: 1, info: 2 };
+  result.findings.sort((a, b) => order[a.severity] - order[b.severity]);
+} else if (policyUrl && result.manifestError) {
+  console.error(
+    "--privacy-policy was skipped: the extension directory could not be read, so " +
+      "the finding below is the one that matters first.",
+  );
+}
+
 if (flags.has("--json")) {
   console.log(JSON.stringify(result, (k, v) => (k === "files" || k === "lines" ? undefined : v), 2));
   process.exit(result.counts.fail ? 1 : 0);
@@ -152,7 +200,10 @@ if (!result.findings.length) {
     console.log(`      rule ${f.rule}${f.citation ? `  |  ${f.citation.notificationIds.join(", ")}  |  ${f.citation.title}` : ""}`);
     if (f.detail) console.log(wrap(f.detail, "      "));
     for (const e of (f.evidence || []).slice(0, 8)) {
-      console.log(`        ${e.file}:${e.line}  ${e.text || e.match || ""}`);
+      // Not all evidence is a line in a file. The privacy policy check's evidence
+      // is a url and an HTTP status, and printing "url:undefined" for it reads
+      // like a bug in the tool.
+      console.log(`        ${e.file}${e.line ? ":" + e.line : ""}  ${e.text || e.match || ""}`);
     }
     if ((f.evidence || []).length > 8) console.log(`        ... and ${f.evidence.length - 8} more`);
     if (!flags.has("--quiet") && f.citation) {
