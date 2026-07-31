@@ -179,6 +179,70 @@ const defAndCall = mkExt("Both", "An extension that both declares an eval method
 });
 check("CONTROL: an eval CALL beside an eval definition still fails", Boolean(rcFail(defAndCall)));
 
+// ---------------------------------------------------------------------------
+// (1c) T-0416. `eval()` with an EMPTY argument list executes nothing and returns
+// undefined, so it is provably not string execution - the same kind of local,
+// per-match proof as the two skips above. It is how scriptcat came to FAIL:
+// the package bundles ESLint's own rule metadata, whose text is
+// "Disallow the use of `eval()`".
+//
+// This is the ONLY part of T-0416 that got fixed, and the rest is refused on
+// measurement rather than taste. The proposal was to blank plain string literals
+// so that inert text stops firing. Probed over the 82 cached release packages
+// that reclassified 28 sites, of which only FOUR were the inert text it aimed at:
+// six were real violations a quote-tracking scan had misread, and eighteen were
+// executable source deliberately embedded as a string. The control that settles
+// it is inside ONE package - screenity ships the same bundled library twice,
+// byte-identical but for minifier variable names, and a quote-tracking scan calls
+// `new Function(x[P])(window)` code and `new Function(k[E])(window)` a string.
+// Identical code, two answers. See the comment in rules.mjs.
+const evalNoArgs = mkExt("Linter", "An extension bundling a javascript linter with rule metadata in it.", {
+  "app.js": 'chrome.storage.local.get("k");\nconst meta={description:"Disallow the use of `eval()`",url:"https://eslint.org/docs/latest/rules/no-eval"};\n',
+});
+check("eval() with no arguments is not a remote-code FAIL", !rcFail(evalNoArgs));
+
+// CONTROL, and it is the one that stops the skip widening into "eval in a
+// string is fine": HackTools ships this exact payload as cheat-sheet UI text and
+// it is LEFT FAILING, because nothing local separates it from a genuine call.
+const evalInString = mkExt("Cheatsheet", "An extension listing cross site scripting payloads as reference text.", {
+  "app.js": 'chrome.storage.local.get("k");\nconst payloads=[{title:"eval(\'ale\'+\'rt(0)\');"}];\n',
+});
+check("CONTROL: eval( with arguments inside a string still fails", Boolean(rcFail(evalInString)));
+
+// ---------------------------------------------------------------------------
+// (1d) "NO REMOTE CODE FOUND" IS A CLAIM ABOUT ALL THE CODE. scan.mjs does not
+// read a file over 2 MB, and this rule used to go silent as though the package
+// were clean. Measured on the 82 cached release packages: 23 skip a file for
+// size, 13 of those produced no remote-code failure, and in three an unread file
+// holds a site this rule would report - return-youtube-dislike ships
+// `new Function('return (' + source + ');')()` in a 4.0 MB content script.
+const bigUnread = mkExt("Bundled", "An extension whose service worker is a single large bundle.", {
+  "app.js": 'chrome.storage.local.get("k");\n',
+  // Over the 2 MB limit, and carrying a real violation the scan will never see.
+  "background.js": `var pad="${"x".repeat(2 * 1024 * 1024)}";\nvar f=new Function('return ('+source+');')();\n`,
+});
+{
+  const r = lint(bigUnread);
+  const warn = r.findings.find((f) => f.rule === "remote-code" && f.severity === "warn" && /too large/i.test(f.title));
+  // Assert on the DISCLOSURE, not on the absence of a fail: "no fail" is also
+  // what a crashed rule produces, and it is what the bug produced.
+  check("a code file too large to read is disclosed by the remote-code rule", Boolean(warn),
+    JSON.stringify(r.findings.filter((f) => f.rule === "remote-code").map((f) => f.severity + ":" + f.title)));
+  check("and the disclosure names the file it could not read",
+    warn?.evidence?.some((e) => e.file === "background.js"), JSON.stringify(warn?.evidence));
+  // The rule genuinely cannot see it - which is the point of saying so.
+  check("CONTROL: the violation inside the unread file is indeed not reported",
+    !r.findings.some((f) => f.rule === "remote-code" && f.severity === "fail"));
+}
+
+// CONTROL: a package with nothing skipped must NOT carry the disclosure, or it
+// would appear on every clean report and mean nothing.
+const allRead = mkExt("Small", "An extension whose files are all small enough to read.", {
+  "app.js": 'chrome.storage.local.get("k");\n',
+});
+check("CONTROL: a fully-read package carries no unread-file warning",
+  !lint(allRead).findings.some((f) => f.rule === "remote-code"));
+
 // (2) XML namespace URIs are identifiers, never endpoints. The http:// spelling
 // is fixed by the spec, so this told people to change a string that would break
 // their SVG. 6 of 7 insecure-transmission hits across the real corpus were this.

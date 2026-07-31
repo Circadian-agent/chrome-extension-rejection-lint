@@ -342,7 +342,7 @@ export const RULES = [
   {
     id: "remote-code",
     category: "additional-requirements-for-manifest-v3",
-    run({ files }) {
+    run({ files, skipped = [] }) {
       const out = [];
       // A TEST FILE IS NOT THE PACKAGE CHROME REVIEWS, and pretending otherwise
       // was this rule's largest source of wrong FAILs. Measured over 94 packages
@@ -442,19 +442,59 @@ export const RULES = [
       //    all definitions. The `[^.\w$]` guard cannot see these because the
       //    preceding character in minified code is `}`.
       //
-      // NOT FIXED HERE, AND DELIBERATELY: `eval(` inside a plain string literal
-      // (LasCC/HackTools ships XSS payloads as UI text, scriptcat bundles
-      // ESLint's own no-eval rule metadata). Blanking strings would silence
-      // automa, whose real violation is assembled inside a template literal -
-      // that is T-0411, and the distinction needed is interpolated-vs-not. T-0416.
+      // STRING-BLANKING IS REFUSED, AND THIS IS THE MEASUREMENT RATHER THAN A
+      // PREFERENCE (T-0416, settled on the 82 cached release packages).
+      //
+      // T-0416 proposed blanking plain string literals while sparing template
+      // literals that interpolate, so that HackTools' XSS cheat-sheet text and
+      // scriptcat's bundled ESLint metadata stop FAILing. Implemented as a
+      // probe, that rule reclassified 28 sites - and only FOUR of them are the
+      // inert text it was aimed at. Six were REAL violations that a
+      // quote-tracking scan had misread, and eighteen were executable source
+      // deliberately embedded as a string (ace's worker in dejavu, an injected
+      // bundle in nanobrowser, a whole webpack bundle in wechatsync, which
+      // executes text fetched from a remote page).
+      //
+      // THE MECHANISM IS THE PART THAT TRANSFERS. `stripComments` bails a
+      // quoted string at a NEWLINE, which bounds the damage of a mispaired
+      // quote to one line. A minified bundle is ONE line - screenity's is
+      // 462,552 characters with zero newlines - so that bound never applies and
+      // a single misread quote reclassifies the rest of the file.
+      //
+      // THE CONTROL THAT SETTLES IT is inside one package. screenity ships the
+      // same bundled library twice, and both copies execute the text of a
+      // <script> element they found: `new Function(x[P])(window)` in
+      // cloudrecorder.bundle.js and `new Function(k[E])(window)` in
+      // contentScript.bundle.js, byte-identical but for minifier variable
+      // names. A quote-tracking scan calls the first one CODE and puts the
+      // second inside a 93,061-character "string literal". Identical code, two
+      // answers - so the scan cannot be a basis for silencing anything, and
+      // blanking would have silenced the very violation s101 unmasked.
+      //
+      // THE DIRECTION OF SAFETY INVERTS WHEN THE SCANNER IS REUSED. Missing a
+      // comment leaves code visible, which is why stripComments resolves every
+      // ambiguity toward "not a comment". Asking the SAME scanner to blank
+      // strings turns each of those misreads into a deleted violation. A
+      // fail-safe scanner is only fail-safe for the question it was built for.
+      //
+      // What IS fixed here is the part that needs no string tracking at all:
+      // `eval()` with an empty argument list executes nothing and returns
+      // undefined, so it is provably not string execution - the same kind of
+      // local, per-match proof as the two skips below. That is scriptcat's two
+      // sites, whose text is "Disallow the use of `eval()`". HackTools' two
+      // sites are real-looking calls (`eval('ale'+'rt(0)')`) that happen to sit
+      // in a string, and nothing local separates them from a genuine call, so
+      // they are LEFT FAILING rather than guessed at.
       const BUNDLER_GLOBAL_SHIM = /^new\s+Function\s*\(\s*(["'])return this\1\s*\)/;
       const EVAL_METHOD_DEF = /^eval\s*\(\s*(?:[A-Za-z_$][\w$]*(?:\s*,\s*[A-Za-z_$][\w$]*)*)?\s*\)\s*\{/;
+      const EVAL_NO_ARGS = /^eval\s*\(\s*\)/;
       const executesAString = (m, line) => {
         // m[1] is the leading non-identifier char of the eval branch, which is
         // part of the match but not part of the site.
         const at = m.index + (m[1] ? m[1].length : 0);
         const tail = line.slice(at, at + 80);
-        return !BUNDLER_GLOBAL_SHIM.test(tail) && !EVAL_METHOD_DEF.test(tail);
+        return !BUNDLER_GLOBAL_SHIM.test(tail) && !EVAL_METHOD_DEF.test(tail)
+          && !EVAL_NO_ARGS.test(tail);
       };
       const source = new Map(files.map((f) => [f.path, f.lines]));
       const evals = grep(codeView(files), /(^|[^.\w$])eval\s*\(|new\s+Function\s*\(/, isCode, executesAString)
@@ -497,6 +537,39 @@ export const RULES = [
               + "your build output: if these files do ship, it is a real remote-code violation.",
             evidence: tests,
           }));
+      // "NO REMOTE CODE FOUND" IS A CLAIM ABOUT ALL THE CODE, and this rule was
+      // making it about the code it happened to open. Same asymmetry
+      // unused-permissions carries above, at a higher severity: scan.mjs skips
+      // any file over 2 MB and lists it honestly, and this rule then went silent
+      // as though the package were clean.
+      //
+      // MEASURED ON THE 82 CACHED RELEASE PACKAGES, not argued: 23 skip at least
+      // one file for size, 13 of those produced no remote-code failure at all,
+      // and in THREE of them an unread file holds a site this rule would have
+      // reported. Anarios/return-youtube-dislike ships
+      // `new Function('return (' + source + ');')()` in a 4.0 MB content script;
+      // nanobrowser has two sites in a 3.8 MB service worker; bitwarden two more
+      // in a 3.2 MB background.js. 27 reportable sites sit in unread files
+      // across 7 packages. The tool told all three they were clean.
+      //
+      // The limit itself is left alone deliberately - a bigger number only moves
+      // the cliff, and page-assist ships an 8.3 MB chunk. What must not survive
+      // is the SILENCE, because a developer reads "no findings" as "nothing
+      // there" and this is the rule Google enforces first.
+      const unreadCode = skipped.filter((s) => /\.(js|mjs|cjs|ts|jsx|tsx|html?)$/i.test(s.path || ""));
+      if (unreadCode.length) {
+        out.push(finding({
+          severity: "warn",
+          title: `${unreadCode.length} code file(s) were too large to read, so this rule could not check them`,
+          detail:
+            "This is a limitation of the scan, not a defect found in your extension. Files over 2 MB are not read, "
+            + "and remote code executed inside one of them would not appear above - so treat the result of this rule "
+            + "as covering only the files listed as read. Bundled service workers and content scripts are the usual "
+            + "ones to exceed it, and they are also where a reviewer looks first. Search these files yourself for "
+            + "eval(, new Function(, a dynamic import() of a URL, and <script src> pointing off-package.",
+          evidence: unreadCode.map((s) => ({ file: s.path, line: 1, text: s.why })),
+        }));
+      }
       return out;
     },
   },
