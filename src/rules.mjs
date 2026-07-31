@@ -421,8 +421,43 @@ export const RULES = [
       // would also silence automa, which assembles code inside a template
       // literal and then injects it - a real violation. `stripComments` steps
       // over strings and preserves newlines, so line numbers still line up.
+      //
+      // TWO SITE SHAPES ARE PROVABLY NOT STRING EXECUTION AND ARE SKIPPED
+      // (T-0414, measured on 79 shipped release packages rather than source
+      // trees). Both are skipped per MATCH, so the scan continues along the same
+      // line - see grep() in scan.mjs for why that distinction is the whole
+      // point. Between them they were the SOLE evidence behind 8 of 23 FAILs.
+      //
+      // 1. `new Function("return this")` is webpack's globalThis shim. A BUNDLER
+      //    emits it; no developer wrote it and none can delete it without
+      //    changing bundler config. The argument is an eleven-character literal,
+      //    so it cannot carry anything from the network - and webpack already
+      //    wraps it in try/catch precisely because an extension CSP blocks it.
+      //    Present in 13 of the 23 packages, and the only site in floccus,
+      //    aniskip, copycat and chatGPTBox. It was also MASKING a real
+      //    `new Function(scriptText)(window)` in two screenity bundles.
+      // 2. `eval(a, b){` is a METHOD DEFINITION NAMED eval, not a call: a call
+      //    is never followed by a block. less.js declares `eval()` on its AST
+      //    node classes, which FAILed openstyles/stylus on three sites that are
+      //    all definitions. The `[^.\w$]` guard cannot see these because the
+      //    preceding character in minified code is `}`.
+      //
+      // NOT FIXED HERE, AND DELIBERATELY: `eval(` inside a plain string literal
+      // (LasCC/HackTools ships XSS payloads as UI text, scriptcat bundles
+      // ESLint's own no-eval rule metadata). Blanking strings would silence
+      // automa, whose real violation is assembled inside a template literal -
+      // that is T-0411, and the distinction needed is interpolated-vs-not. T-0416.
+      const BUNDLER_GLOBAL_SHIM = /^new\s+Function\s*\(\s*(["'])return this\1\s*\)/;
+      const EVAL_METHOD_DEF = /^eval\s*\(\s*(?:[A-Za-z_$][\w$]*(?:\s*,\s*[A-Za-z_$][\w$]*)*)?\s*\)\s*\{/;
+      const executesAString = (m, line) => {
+        // m[1] is the leading non-identifier char of the eval branch, which is
+        // part of the match but not part of the site.
+        const at = m.index + (m[1] ? m[1].length : 0);
+        const tail = line.slice(at, at + 80);
+        return !BUNDLER_GLOBAL_SHIM.test(tail) && !EVAL_METHOD_DEF.test(tail);
+      };
       const source = new Map(files.map((f) => [f.path, f.lines]));
-      const evals = grep(codeView(files), /(^|[^.\w$])eval\s*\(|new\s+Function\s*\(/, isCode)
+      const evals = grep(codeView(files), /(^|[^.\w$])eval\s*\(|new\s+Function\s*\(/, isCode, executesAString)
         // Report the ORIGINAL line, not the blanked one: evidence a developer
         // reads has to match what is in their editor.
         .map((h) => ({ ...h, text: source.get(h.file)?.[h.line - 1] ?? h.text }));

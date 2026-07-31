@@ -127,6 +127,58 @@ writeFileSync(join(newFn, "manifest.json"), JSON.stringify({ manifest_version: 3
 writeFileSync(join(newFn, "app.js"), 'chrome.storage.local.get("k");\nreturn new Function("return " + obj.__value)();\n');
 check("CONTROL: new Function( still fails", bySeverity(lint(newFn), "fail").includes("remote-code"));
 
+// ---------------------------------------------------------------------------
+// (1b) T-0414, FOUND ON SHIPPED RELEASE PACKAGES rather than source trees.
+// `new Function("return this")` is webpack's globalThis shim and a method named
+// `eval` is a definition, not a call. Between them they were the SOLE evidence
+// behind 8 of 23 remote-code FAILs on real published extensions.
+const mkExt = (name, desc, files) => {
+  const d = mkdtempSync(join(tmpdir(), "wsl-"));
+  writeFileSync(join(d, "manifest.json"), JSON.stringify({ manifest_version: 3, name, description: desc, icons: { 16: "i.png" }, permissions: ["storage"] }));
+  for (const [f, body] of Object.entries(files)) writeFileSync(join(d, f), body);
+  return d;
+};
+const rcFail = (dir) => lint(dir).findings.find((f) => f.rule === "remote-code" && f.severity === "fail" && /eval|Function/.test(f.title));
+
+const shimOnly = mkExt("Bundled", "An extension bundled with webpack and nothing else.", {
+  "app.js": 'chrome.storage.local.get("k");\nr.g=function(){if("object"==typeof globalThis)return globalThis;try{return this||new Function("return this")()}catch(e){}}();\n',
+});
+check("the webpack globalThis shim alone is not a remote-code FAIL", !rcFail(shimOnly));
+
+// THE ONE THAT MATTERS. grep() takes one match per line and a bundle is ONE
+// LINE, so before this fix the shim was the only site a developer ever saw and
+// the real call after it was never reported. The assertion is on the reported
+// MATCH TEXT, because "a fail is still produced" would also pass if the tool had
+// simply gone on reporting the shim - the failure and the success look the same
+// at the level of rule ids. Only the fix can make this say eval(.
+const masked = mkExt("Masked", "An extension whose bundle carries a shim and a real call.", {
+  "app.js": 'chrome.storage.local.get("k");\nvar r={};r.g=function(){try{return this||new Function("return this")()}catch(e){}}();var out=eval(fetchedFromServer);\n',
+});
+{
+  const f = rcFail(masked);
+  check("a real eval AFTER the shim on the same line is still a FAIL", Boolean(f), JSON.stringify(ids(lint(masked))));
+  check("and the site reported is the eval, not the shim it sat behind",
+    /^eval\s*\(/.test(f?.evidence?.[0]?.match?.replace(/^[^\w$]/, "") || ""), JSON.stringify(f?.evidence?.[0]?.match));
+}
+
+const evalMethod = mkExt("Compiler", "An extension embedding a CSS compiler whose AST nodes declare eval.", {
+  "app.js": 'chrome.storage.local.get("k");\nclass Paren extends Node{genCSS(e,t){t.add("(")}eval(e){return new Paren(this.value.eval(e))}};\n',
+});
+check("a method DEFINITION named eval is not a remote-code FAIL", !rcFail(evalMethod));
+
+// CONTROLS for both narrowings. Each must fire, and each is a shape the
+// exclusion above deliberately does not cover - a prefix match or a loose
+// method test would swallow these and the tool would go quiet on real code.
+const shimLookalike = mkExt("Lookalike", "An extension building a function from something other than a literal.", {
+  "app.js": 'chrome.storage.local.get("k");\nvar f=new Function("return fetch(" + url + ")");\n',
+});
+check("CONTROL: new Function with any OTHER string still fails", Boolean(rcFail(shimLookalike)));
+
+const defAndCall = mkExt("Both", "An extension that both declares an eval method and calls global eval.", {
+  "app.js": 'chrome.storage.local.get("k");\nclass N{eval(e){return this}};\nvar out=eval(userCode);\n',
+});
+check("CONTROL: an eval CALL beside an eval definition still fails", Boolean(rcFail(defAndCall)));
+
 // (2) XML namespace URIs are identifiers, never endpoints. The http:// spelling
 // is fixed by the spec, so this told people to change a string that would break
 // their SVG. 6 of 7 insecure-transmission hits across the real corpus were this.

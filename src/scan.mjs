@@ -190,14 +190,42 @@ export function resolveI18n(manifest, files, skipped = []) {
 // Find every line matching a pattern, with its file and 1-indexed line number.
 // Evidence is what separates a finding from an opinion, so every rule uses this
 // rather than testing whole-file text and reporting the file alone.
-export function grep(files, re, filter = () => true) {
+//
+// ONE MATCH PER LINE, AND ON MINIFIED CODE A LINE IS THE WHOLE FILE. That is
+// fine for evidence - one site is enough to make a developer look - but it means
+// WHICHEVER SITE COMES FIRST IN THE FILE IS THE ONLY SITE ANYONE EVER SEES. If
+// that first site is something the rule would rather not report, the effect is
+// not a tidier finding: it is a REAL site, later in the same line, that the tool
+// silently never mentions. Measured on shipped packages (T-0414): screenity's
+// `cloudrecorder.bundle.js` and `contentScript.bundle.js` each begin with
+// webpack's `new Function("return this")` globalThis shim, and each hides a
+// `new Function(scriptText)(window)` further along the same 460 KB line.
+//
+// So `accept` does NOT filter the returned hits. It is consulted per MATCH, and
+// a rejected match makes the scan CONTINUE ALONG THE SAME LINE to the next one.
+// Rejecting a site can therefore only ever reveal another site or leave the line
+// unreported - never mask one. Filtering afterwards would have dropped both
+// screenity files entirely and called that an improvement.
+export function grep(files, re, filter = () => true, accept = null) {
   const hits = [];
+  const push = (f, i, m) =>
+    hits.push({ file: f.path, line: i + 1, match: m[0].slice(0, 120), text: f.lines[i].trim().slice(0, 160) });
   for (const f of files) {
     if (!filter(f)) continue;
     for (let i = 0; i < f.lines.length; i++) {
-      const rx = new RegExp(re.source, re.flags.replace("g", ""));
-      const m = rx.exec(f.lines[i]);
-      if (m) hits.push({ file: f.path, line: i + 1, match: m[0].slice(0, 120), text: f.lines[i].trim().slice(0, 160) });
+      if (!accept) {
+        const rx = new RegExp(re.source, re.flags.replace("g", ""));
+        const m = rx.exec(f.lines[i]);
+        if (m) push(f, i, m);
+        continue;
+      }
+      // `g` is required to advance lastIndex; the caller's regex may not have it.
+      const rx = new RegExp(re.source, re.flags.includes("g") ? re.flags : re.flags + "g");
+      let m;
+      while ((m = rx.exec(f.lines[i])) !== null) {
+        if (m[0].length === 0) { rx.lastIndex++; continue; } // a zero-width match never advances
+        if (accept(m, f.lines[i])) { push(f, i, m); break; }
+      }
     }
   }
   return hits;
