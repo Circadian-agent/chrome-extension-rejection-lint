@@ -943,6 +943,24 @@ check("cli: a supplied url is not linted as a directory",
     !mkdir({ "app.js": 'const m = await import("https://cdn.example.com/x.js");' }));
   check("unbuilt-source: a package with no imports at all is silent",
     !mkdir({ "app.js": 'chrome.storage.local.get("k");' }));
+
+  // THE TWO THAT SHIPPED. Both are verbatim from immersive-translate's built
+  // dist/chrome, which v1.0.4 flagged as source. The first matched the word
+  // `from` inside a string literal and reported a module named ", ". Kept as
+  // literals rather than paraphrased, because the paraphrase is what passes.
+  check("unbuilt-source: CONTROL, the word from inside a string is not an import",
+    !mkdir({ "app.js": 'return ["from", "to"].forEach((a) => { chrome.storage.local.get(a); });' }),
+    "matched from inside a string literal");
+  check("unbuilt-source: CONTROL, a minified bundle is not source",
+    !mkdir({ "b.js": '(()=>{var t={919:(t,e)=>{"use strict";e.byteLength=function(t){return t.concat("from","x")}}};})();' }));
+  // ...and the positive alongside them, so this block cannot pass by the rule
+  // having been switched off.
+  check("unbuilt-source: CONTROL PAIR, a real bare import still fires",
+    !!mkdir({ "app.js": 'import x from "clsx";' }));
+  check("unbuilt-source: a multi-line import list is still caught",
+    !!mkdir({ "app.js": 'import {\n  debounce,\n} from "debounce-fn";' }));
+  check("unbuilt-source: a side-effect import is caught",
+    !!mkdir({ "app.js": 'import "webext-base-css";' }));
 }
 
 console.log(`\nwebstore-lint: ${pass} passed, ${fail} failed`);

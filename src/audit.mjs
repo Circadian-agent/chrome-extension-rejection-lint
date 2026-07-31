@@ -114,18 +114,41 @@ export function namespaceUsed(code, apis) {
 // dependencies use. T-0403 already tells the reader in the README to point this
 // tool at dist/ or .output/chrome-mv3; prose next to a tool does not travel, so
 // the tool now checks.
+// THE STATEMENT MUST BE ANCHORED, and the first version was not - it looked for
+// the word `from` next to a quote anywhere on a line. Published as v1.0.4 and
+// caught by running the published artifact against a real bundle, which is the
+// second time that step has found what the local tree hid:
+//
+//     return ["from", "to"].forEach((a) => {
+//
+// matched `from` inside a STRING, took the closing quote of "from" and the
+// opening quote of "to" as its delimiters, and reported a module named `, `.
+// It fired on immersive-translate's shipped dist/chrome - the built output this
+// rule exists to tell people to use. A rule that fires on the directory it is
+// recommending is worse than no rule.
+//
+// So a match must begin a statement: `import` or `export` at the head of a line.
+// Multi-line import lists are still caught (the tail is bounded), and a dynamic
+// `import()` is deliberately NOT matched - a bare dynamic import of a package
+// name barely exists in extension source, and every form it takes here would be
+// relative or a URL, both of which are excluded anyway.
 export function bareImports(files) {
   const out = [];
-  const pat = /(?:\bfrom\s*|\bimport\s*\(?\s*)["']([^"']+)["']/g;
+  const pats = [
+    /^[ \t]*(?:import|export)\b[^;'"]{0,300}?\bfrom\s*["']([^"']+)["']/gm, // import x from "clsx"
+    /^[ \t]*import\s*["']([^"']+)["']/gm, // import "side-effect"
+  ];
   for (const f of files) {
     if (!isCode(f) || !/\.(js|mjs|cjs|ts|jsx|tsx)$/i.test(f.path)) continue;
-    for (let i = 0; i < f.lines.length; i++) {
-      for (const m of f.lines[i].matchAll(pat)) {
+    for (const pat of pats) {
+      pat.lastIndex = 0;
+      for (const m of f.text.matchAll(pat)) {
         const spec = m[1];
         // Relative and absolute paths resolve; anything with a scheme is a URL,
         // which is a different finding (remote-code) and not this one.
         if (/^[./]/.test(spec) || spec.includes(":")) continue;
-        out.push({ file: f.path, line: i + 1, spec, text: f.lines[i].trim().slice(0, 160) });
+        const line = f.text.slice(0, m.index).split("\n").length;
+        out.push({ file: f.path, line, spec, text: (f.lines[line - 1] || "").trim().slice(0, 160) });
         if (out.length >= 25) return out;
       }
     }
