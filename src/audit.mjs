@@ -29,12 +29,15 @@
 
 import { isCode, codeView, largeWindows, grepLarge } from "./scan.mjs";
 
-// Permission -> the namespaces whose presence proves it is used. rules.mjs keeps
-// its own copy because it needs only a boolean while this pass needs the call
-// sites. THAT SPLIT HAS COST US TWICE (declaredHosts, and the manifest-evidence
-// gap below), so if you touch either table, run both halves against the same
-// fixture and check they agree. Anything that can be answered once is shared -
-// see codeView in scan.mjs.
+// Permission -> the namespaces whose presence proves it is used. THIS IS THE ONLY
+// COPY, and it was not always: rules.mjs carried its own on the argument that it
+// needs a boolean where this pass needs call sites. That is a difference between
+// the two CONSUMERS, not between the two tables, and the tables drifted anyway -
+// four permissions deep by the time anyone counted (s105, T-0421). The drift ran
+// in the silent direction, which is why nobody noticed: a permission the rule does
+// not model is read as "unknown" and produces no finding, so the tool simply could
+// never flag activeTab, offscreen, sidePanel or declarativeNetRequest. Anything
+// that can be answered once is shared - see codeView in scan.mjs.
 export const PERMISSION_API = {
   cookies: ["chrome.cookies", "browser.cookies"],
   history: ["chrome.history", "browser.history"],
@@ -66,6 +69,22 @@ export const PERMISSION_API = {
   sidePanel: ["chrome.sidePanel", "browser.sidePanel"],
   declarativeNetRequest: ["chrome.declarativeNetRequest", "browser.declarativeNetRequest"],
 };
+
+// Permissions that HAVE no namespace, as opposed to permissions whose namespace
+// we failed to find. The distinction is the whole safety of the unused rule: an
+// empty pattern list makes namespaceUsed answer false, and false there means
+// "declared but never used", which is a FAIL telling a developer to delete it.
+//
+// activeTab is granted for the duration of a user gesture and exposes nothing of
+// its own, so it has no call sites BY CONSTRUCTION and no manifest key either.
+// Flagging it would be worse than a merely wrong finding: this same file's
+// narrowing advice tells people to move from `tabs` to activeTab and from broad
+// hosts to `scripting + activeTab`, so the tool would recommend a permission on
+// one line and demand its deletion on another. Both halves read this set, so
+// neither can start disagreeing about it.
+export const NO_NAMESPACE_PERMISSIONS = new Map([
+  ["activeTab", "activeTab is granted by a user gesture and has no namespace of its own, so it has no call sites by construction. It is the narrow answer, not a finding."],
+]);
 
 // Does the packaged code use this permission's namespace?
 //
@@ -470,9 +489,9 @@ export function audit({ manifest, files, skipped, oversized = [] }) {
     // which they would have, the moment the rule started reading them.
     const sites = apis.length ? [...callSites(code, apis), ...largeCallSites(largeCode, apis)] : [];
     used[name] = sites;
-    if (name === "activeTab") {
+    if (NO_NAMESPACE_PERMISSIONS.has(name)) {
       ledger.push({ permission: name, where, status: "used", sites: [],
-        note: "activeTab is granted by a user gesture and has no namespace of its own, so it has no call sites by construction. It is the narrow answer, not a finding." });
+        note: NO_NAMESPACE_PERMISSIONS.get(name) });
       continue;
     }
     // No call sites is not the same as no evidence: some permissions are earned

@@ -19,7 +19,10 @@
 // must check.
 
 import { grep, grepAcross, grepLarge, largeWindows, isCode, isMarkup, codeView } from "./scan.mjs";
-import { MANIFEST_EVIDENCE, namespaceUsed, looksMinified, looksMinifiedLarge, bareImports } from "./audit.mjs";
+import {
+  MANIFEST_EVIDENCE, PERMISSION_API, NO_NAMESPACE_PERMISSIONS,
+  namespaceUsed, looksMinified, looksMinifiedLarge, bareImports,
+} from "./audit.mjs";
 
 // Permissions whose presence means USER data is in play. Used by the disclosure
 // and privacy-policy rules. Kept explicit rather than inferred: a list you can
@@ -40,36 +43,12 @@ export const DATA_PERMISSIONS = [
   "videoCapture", "contentSettings", "debugger", "proxy",
 ];
 
-// chrome.* namespaces a permission unlocks, for the unused-permission check.
-// A permission whose namespace never appears is the exact trigger Google names
-// for Purple Potassium.
-const PERMISSION_API = {
-  cookies: ["chrome.cookies", "browser.cookies"],
-  history: ["chrome.history", "browser.history"],
-  topSites: ["chrome.topSites", "browser.topSites"],
-  bookmarks: ["chrome.bookmarks", "browser.bookmarks"],
-  downloads: ["chrome.downloads", "browser.downloads"],
-  browsingData: ["chrome.browsingData", "browser.browsingData"],
-  management: ["chrome.management", "browser.management"],
-  tabs: ["chrome.tabs", "browser.tabs"],
-  webRequest: ["chrome.webRequest", "browser.webRequest"],
-  webNavigation: ["chrome.webNavigation", "browser.webNavigation"],
-  identity: ["chrome.identity", "browser.identity"],
-  storage: ["chrome.storage", "browser.storage"],
-  notifications: ["chrome.notifications", "browser.notifications"],
-  contextMenus: ["chrome.contextMenus", "browser.contextMenus"],
-  alarms: ["chrome.alarms", "browser.alarms"],
-  scripting: ["chrome.scripting", "browser.scripting"],
-  debugger: ["chrome.debugger", "browser.debugger"],
-  proxy: ["chrome.proxy", "browser.proxy"],
-  privacy: ["chrome.privacy", "browser.privacy"],
-  contentSettings: ["chrome.contentSettings", "browser.contentSettings"],
-  pageCapture: ["chrome.pageCapture", "browser.pageCapture"],
-  desktopCapture: ["chrome.desktopCapture", "browser.desktopCapture"],
-  idle: ["chrome.idle", "browser.idle"],
-  power: ["chrome.power", "browser.power"],
-  tts: ["chrome.tts", "browser.tts"],
-};
+// The chrome.* namespaces a permission unlocks live in audit.mjs and are imported
+// above. A permission whose namespace never appears is the exact trigger Google
+// names for Purple Potassium. There used to be a second copy of that table here,
+// on the reasoning that this rule wants a boolean where the audit wants call
+// sites - true of the consumers, not of the data, and the two drifted by four
+// permissions before anyone counted them (T-0421).
 
 const BROAD_HOSTS = ["<all_urls>", "*://*/*", "http://*/*", "https://*/*"];
 
@@ -609,6 +588,13 @@ export const RULES = [
       let unused = declared.filter((p) => {
         const apis = PERMISSION_API[p];
         if (!apis) return false; // unknown permission: say nothing rather than guess
+        // A permission with no namespace to look for is not a permission we
+        // failed to find. namespaceUsed answers false for an empty pattern list,
+        // and false here means FAIL, so without this activeTab would be reported
+        // as unused on every extension that declares it - the one permission
+        // Google's own advice, and this linter's narrowing advice, tells people
+        // to move TO.
+        if (NO_NAMESPACE_PERMISSIONS.has(p)) return false;
         // Not a literal `chrome.storage` test: a minifier aliases the namespace
         // and the literal test then reads as "never used". See namespaceUsed.
         if (namespaceUsed(code, apis)) return false;

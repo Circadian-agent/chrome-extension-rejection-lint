@@ -13,9 +13,10 @@
 
 import { lint, auditPermissions } from "../src/lint.mjs";
 import { stripComments, stripCommentsChunk, initialCommentState } from "../src/scan.mjs";
+import { PERMISSION_API, NO_NAMESPACE_PERMISSIONS } from "../src/audit.mjs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 
@@ -696,6 +697,46 @@ const active = mkdtempSync(join(tmpdir(), "wsl-"));
 writeFileSync(join(active, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "Active", description: "Reads the page you are on when you click the toolbar button.", icons: { 16: "i.png" }, permissions: ["activeTab"] }));
 writeFileSync(join(active, "app.js"), 'chrome.action.onClicked.addListener(() => {});\n');
 check("activeTab is never reported unused", permStatus(ledgerOf(active), "activeTab") === "used");
+
+// THE PERMISSION TABLE HAD TWO COPIES AND THEY DRIFTED BY FOUR ENTRIES (T-0421),
+// and the reason it went unnoticed for so long is the interesting part: the
+// agreement checks above were only ever run on permissions BOTH halves modelled.
+// A permission missing from the rule's copy is read as "unknown", the rule stays
+// silent, and silence agrees with everything. So the drift was invisible to the
+// test written to catch exactly this. There is one table now, and these assert
+// the four that were missing in the direction that used to be unreachable.
+check("PERMISSION_API is not redeclared in rules.mjs",
+  !/^\s*(?:const|let|var|export const)\s+PERMISSION_API\s*=/m.test(readFileSync(join(here, "..", "src", "rules.mjs"), "utf8")));
+
+// The structural invariant behind activeTab, stated so a FUTURE empty entry
+// cannot reintroduce the bug: namespaceUsed answers false for an empty pattern
+// list, and false means FAIL, so any permission with no namespace must be
+// declared as having none rather than left to look like one we could not find.
+for (const [name, apis] of Object.entries(PERMISSION_API)) {
+  if (apis.length) continue;
+  check(`${name} has no namespace, so it is declared in NO_NAMESPACE_PERMISSIONS`,
+    NO_NAMESPACE_PERMISSIONS.has(name));
+}
+
+// activeTab is the one that must NOT flip: the rule now models it, and modelling
+// it naively is what would fail every extension declaring the permission this
+// linter's own narrowing advice tells people to move to.
+check("...and the unused-permissions RULE does not fail an extension for activeTab",
+  lint(active).findings.some((f) => f.rule === "unused-permissions") === false);
+
+// The other three gain a verdict they could never reach. Each is asserted as
+// AGREEMENT between the halves, in the direction the drift made unreachable: a
+// permission with neither call sites nor manifest configuration is unused, and
+// before this the rule said nothing at all.
+check("halves agree that a bare declarativeNetRequest is unused", agree('console.log("x");\n', "declarativeNetRequest"));
+check("halves agree that a bare sidePanel is unused", agree('console.log("x");\n', "sidePanel"));
+check("halves agree that a bare offscreen is unused", agree('console.log("x");\n', "offscreen"));
+// ...and the false-positive control alongside each, so none of the three passes
+// by the rule having become trigger-happy instead of merely present.
+check("halves agree that offscreen WITH a call site is used", agree("chrome.offscreen.createDocument({});\n", "offscreen"));
+check("halves agree that sidePanel WITH a call site is used", agree("chrome.sidePanel.setOptions({});\n", "sidePanel"));
+check("halves agree that declarativeNetRequest WITH a call site is used",
+  agree("chrome.declarativeNetRequest.updateDynamicRules({});\n", "declarativeNetRequest"));
 
 // Minified code defeats call-site evidence. The audit must SAY so rather than
 // report a confident zero - an absence found in a bundle is not an absence.
