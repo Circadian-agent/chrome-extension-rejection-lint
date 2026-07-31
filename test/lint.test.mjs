@@ -738,6 +738,58 @@ check("ntp: THE CONTROL - the hijack in the very same file is still caught",
 check("ntp: a redirect sharing a line with a benign create is still caught",
   bySeverity(lint(pkg({ "manifest.json": ntpBase, "sw.js": 'if (t.url === "chrome://newtab") { chrome.tabs.create({ url: "chrome://newtab" }); chrome.tabs.update(t.id, { url: "https://ours.example/" }); }\n' })), "fail").includes("ntp-override"));
 
+// 2a-bis. RECOGNISING THE NEW TAB PAGE IN ORDER TO LEAVE IT ALONE. Chrome
+// forbids content scripts on chrome:// pages, so a careful extension guards
+// against them - which means the old rule fired hardest on the extensions being
+// most careful. All three are verbatim from the corpus.
+for (const [who, code] of [
+  ["obsidian-clipper's isBlankPage", "export function isBlankPage(url) {\n  return url === 'about:blank' || url === 'chrome://newtab/' || url === 'edge://newtab/';\n}\n"],
+  ["extension-js's first-run check", "const isInitialPage =\n  url.startsWith('about:home') ||\n  url.startsWith('about:newtab') ||\n  url === 'about:blank';\n"],
+  ["scriptcat's test that the page is REFUSED", 'expect(() => assertDomUrlAllowed("about:newtab")).toThrow("not allowed");\n'],
+]) {
+  check(`ntp: ${who} is not a finding`,
+    !ids(lint(pkg({ "manifest.json": ntpBase, "sw.js": code }))).includes("ntp-override"),
+    JSON.stringify(ids(lint(pkg({ "manifest.json": ntpBase, "sw.js": code })))));
+}
+// AND THE CONTROL THAT KEEPS THAT FROM BEING A MUTE: the same predicate, plus a
+// redirect that uses it. This is the shape the policy is actually about.
+check("ntp: THE CONTROL - a guard that feeds a redirect is still caught",
+  bySeverity(lint(pkg({ "manifest.json": ntpBase, "sw.js": "chrome.tabs.onUpdated.addListener((id, i, tab) => {\n  if (tab.url === 'chrome://newtab/') chrome.tabs.update(id, { url: 'https://ours.example/' });\n});\n" })), "fail").includes("ntp-override"));
+// Proximity, not co-occurrence: a predicate in one function must not pair with
+// an unrelated navigation far down the file.
+check("ntp: a guard and a distant unrelated tabs.update do not pair up",
+  !ids(lint(pkg({ "manifest.json": ntpBase, "sw.js": "const isBlank = (u) => u === 'chrome://newtab/';\n" + "// filler\n".repeat(60) + "chrome.tabs.update(someId, { url: dest });\n" }))).includes("ntp-override"));
+
+// 2b-bis. THE MANIFEST NAMES FILES THAT ARE NOT HERE. Authenticator was failed
+// for five permissions "never used" while we linted a folder of seven JSON
+// files and no code at all; its manifest names dist/background.js.
+const goneManifest = { manifest_version: 3, name: "Authenticator", version: "1.0.0", description: "Two factor authentication codes, stored locally on your device.", icons: { 16: "i.png" }, permissions: ["storage", "identity", "alarms"], background: { service_worker: "dist/background.js" } };
+const absent = lint(pkg({ "manifest.json": goneManifest }));
+check("missing files: the absent service worker is reported",
+  ids(absent).includes("missing-declared-files"), JSON.stringify(ids(absent)));
+check("missing files: it is a warn, not a fail",
+  !bySeverity(absent, "fail").includes("missing-declared-files"));
+check("missing files: permissions are NOT failed as unused when the code is absent",
+  !bySeverity(absent, "fail").includes("unused-permissions"),
+  JSON.stringify(absent.findings.map((f) => `${f.severity}:${f.rule}`)));
+check("missing files: and it says the code is not here to be read",
+  absent.findings.some((f) => f.rule === "unused-permissions" && /not in this directory/.test(f.detail || "")));
+// THE CONTROL. The same manifest with the file actually present must still fail
+// the permissions, or the guard has deleted the check rather than aimed it.
+const withCode = lint(pkg({ "manifest.json": { ...goneManifest, background: { service_worker: "bg.js" } }, "bg.js": "console.log('nothing uses the permissions');\n" }));
+check("missing files: THE CONTROL - with the file present, unused permissions still fail",
+  bySeverity(withCode, "fail").includes("unused-permissions"),
+  JSON.stringify(withCode.findings.map((f) => `${f.severity}:${f.rule}`)));
+check("missing files: THE CONTROL - and a complete package is not accused of missing any",
+  !ids(withCode).includes("missing-declared-files"));
+// A file the SCANNER skipped is present, not absent - an instrument failure must
+// never render as a finding.
+check("missing files: a declared file too big to read counts as present",
+  !ids(lint(pkg({ "manifest.json": { ...goneManifest, background: { service_worker: "big.js" } }, "big.js": "x".repeat(2 * 1024 * 1024 + 10) }))).includes("missing-declared-files"));
+// Wildcards are patterns, not paths.
+check("missing files: a wildcard resource is not reported missing",
+  !ids(lint(pkg({ "manifest.json": { ...goneManifest, background: { service_worker: "bg.js" }, web_accessible_resources: [{ resources: ["assets/*"], matches: ["<all_urls>"] }] }, "bg.js": "chrome.storage.local.get();chrome.identity.getProfileUserInfo();chrome.alarms.create();\n" }))).includes("missing-declared-files"));
+
 // 2b. FRAGMENT MANIFESTS. A file with no name and no version is an input to a
 // build step, not a package, and saying "you have no description" about one is a
 // true sentence and a wrong diagnosis. Both shapes are real: darkreader's
@@ -748,7 +800,7 @@ for (const [name, m] of [
   ["no name and no version", fragBase],
   ["a name but no version", { ...fragBase, name: "Automa" }],
 ]) {
-  const r = lint(pkg({ "manifest.json": m, "sw.js": "chrome.storage.local.get();\n" }));
+  const r = lint(pkg({ "manifest.json": m, "sw.js": "chrome.storage.local.get();\n", "p.html": "<html></html>" }));
   check(`fragment: ${name} is reported as a build fragment`,
     ids(r).includes("incomplete-manifest"), JSON.stringify(ids(r)));
   check(`fragment: ${name} is NOT misdiagnosed as a missing description`,
@@ -760,7 +812,7 @@ for (const [name, m] of [
 // THE FALSE-POSITIVE CONTROL. A complete manifest that genuinely has no
 // description must still be failed for it - otherwise the guard above has not
 // narrowed the diagnosis, it has deleted the check.
-const noDesc = lint(pkg({ "manifest.json": { ...fragBase, name: "Real", version: "1.0.0", icons: { 16: "i.png" } }, "sw.js": "chrome.storage.local.get();\n" }));
+const noDesc = lint(pkg({ "manifest.json": { ...fragBase, name: "Real", version: "1.0.0", icons: { 16: "i.png" } }, "sw.js": "chrome.storage.local.get();\n", "p.html": "<html></html>" }));
 check("fragment: THE CONTROL - a complete manifest with no description still fails",
   bySeverity(noDesc, "fail").includes("listing-metadata") && noDesc.findings.some((f) => /no description/.test(f.title)),
   JSON.stringify(noDesc.findings.map((f) => `${f.severity}:${f.title}`)));

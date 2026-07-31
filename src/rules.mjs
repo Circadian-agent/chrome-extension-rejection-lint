@@ -140,6 +140,50 @@ function bareOf(files) {
   return v;
 }
 
+// Every file the MANIFEST says the package contains. These are the references
+// Chrome resolves at load time, so a missing one is not a style question - the
+// package does not load at all.
+//
+// Wildcards are excluded: web_accessible_resources legitimately uses them and a
+// pattern is not a path. Icons are excluded too, deliberately - scan() only
+// reads text files, so an icon that is present would be invisible to the check
+// and would report as missing on every package in the world.
+const norm = (p) => String(p).split(/[\\/]/).join("/").replace(/^\.\//, "").replace(/[?#].*$/, "");
+function declaredFiles(manifest) {
+  const m = manifest || {};
+  const out = [];
+  const add = (v, key) => { if (typeof v === "string" && v && !v.includes("*")) out.push({ path: norm(v), key }); };
+  add(m.background?.service_worker, "background.service_worker");
+  add(m.background?.page, "background.page");
+  for (const s of m.background?.scripts || []) add(s, "background.scripts");
+  for (const cs of m.content_scripts || []) {
+    for (const j of cs.js || []) add(j, "content_scripts[].js");
+    for (const c of cs.css || []) add(c, "content_scripts[].css");
+  }
+  add(m.action?.default_popup, "action.default_popup");
+  add(m.browser_action?.default_popup, "browser_action.default_popup");
+  add(m.page_action?.default_popup, "page_action.default_popup");
+  add(m.options_page, "options_page");
+  add(m.options_ui?.page, "options_ui.page");
+  add(m.devtools_page, "devtools_page");
+  add(m.side_panel?.default_path, "side_panel.default_path");
+  for (const [k, v] of Object.entries(m.chrome_url_overrides || {})) add(v, `chrome_url_overrides.${k}`);
+  for (const p of m.sandbox?.pages || []) add(p, "sandbox.pages");
+  return out;
+}
+
+// A file the scanner SKIPPED is present - it was too big or unreadable, not
+// absent. Counting it as missing would be the exact inversion this codebase
+// keeps warning about: an instrument failure rendering as a finding.
+const missingCache = new WeakMap();
+function missingDeclaredOf(manifest, files, skipped = []) {
+  if (missingCache.has(files)) return missingCache.get(files);
+  const present = new Set([...files.map((f) => norm(f.path)), ...skipped.map((s) => norm(s.path))]);
+  const v = declaredFiles(manifest).filter((d) => !present.has(d.path));
+  missingCache.set(files, v);
+  return v;
+}
+
 // ---------------------------------------------------------------------------
 
 export const RULES = [
@@ -225,6 +269,56 @@ export const RULES = [
           "and the ABSENCE of a finding with more: checks that read your name, version, description or icons are " +
           "reading a file that was never meant to hold them.",
         evidence: missing.map((k) => ({ file: "manifest.json", line: 1, text: `${k} absent` })),
+      })];
+    },
+  },
+
+  // THIRD AIMING RULE, and the sharpest of the three because it is not a
+  // heuristic at all: Chrome resolves these paths at load time, so a package
+  // missing one does not load. If the files the manifest names are not here,
+  // this is not the package.
+  //
+  // It exists because two extensions were failed at severity FAIL for
+  // permissions "never used" in code that was not in the directory:
+  //
+  //   Authenticator-Extension/Authenticator - the walker staged
+  //     manifests/manifest-chrome.json, a directory of SEVEN JSON FILES AND NO
+  //     CODE. We told a 2FA extension to delete storage, identity, alarms,
+  //     scripting and contextMenus having read none of its source. Its manifest
+  //     names dist/background.js and view/popup.html, neither of which is there.
+  //
+  //   uddin-rajaul/Neko-Tab - public/ holds the manifest, the icons and two
+  //     scripts; the new tab page it declares (index.html) is built from src/.
+  //     topSites, identity and history are used by that page.
+  //
+  // unbuilt-source cannot catch either: it looks for bare module imports, and
+  // there is barely any code here to import anything. Absence of code reads
+  // exactly like absence of a violation, which is the failure mode this whole
+  // file keeps circling.
+  //
+  // WARN, on the same contract as the other two aiming rules. If the file really
+  // is missing from the package you upload, Chrome refuses it outright and this
+  // is the most important line in the output - but telling that apart from
+  // "pointed at the wrong directory" needs the build output we cannot see.
+  {
+    id: "missing-declared-files",
+    // NO CATEGORY, as with unbuilt-source and incomplete-manifest.
+    run({ manifest, files, skipped = [] }) {
+      if (!manifest) return [];
+      const missing = missingDeclaredOf(manifest, files, skipped);
+      if (!missing.length) return [];
+      const names = missing.slice(0, 3).map((d) => d.path).join(", ");
+      return [finding({
+        severity: "warn",
+        title: `manifest.json names ${missing.length} file(s) that are not in this directory: ${names}${missing.length > 3 ? ", ..." : ""}`,
+        detail:
+          "Chrome resolves these paths when it loads the package, so if they are still missing when you upload, " +
+          "it is refused before any reviewer sees it. Far more often it means this directory is not the package - " +
+          "the files are produced by a build, or the manifest is one of several kept together in a folder of their " +
+          "own. Point this tool at your BUILD OUTPUT or at the unzipped package you would upload. Until you do, " +
+          "treat the ABSENCE of a finding with particular care: checks that look for where a permission is used " +
+          "are reading code that is not here.",
+        evidence: missing.slice(0, 6).map((d) => ({ file: "manifest.json", line: 1, text: `${d.key}: ${d.path}` })),
       })];
     },
   },
@@ -351,8 +445,17 @@ export const RULES = [
       const unread = skipped.filter((s) => /\.(js|mjs|cjs|ts|jsx|tsx|html?)$/i.test(s.path || ""));
       const minified = looksMinified(view);
       const bare = bareImports(view);
-      if (unread.length || minified.length || bare.length) {
-        const why = unread.length
+      // A DECLARED FILE THAT IS NOT HERE IS THE STRONGEST OF THESE FOUR, and it
+      // was the one missing. The other three all describe code we read but could
+      // not fully follow; this one says a piece of the package is ABSENT, which
+      // absence-of-a-call cannot be distinguished from. Authenticator's manifest
+      // names dist/background.js and we were linting a folder of seven JSON
+      // files - "never used" there is a claim about nothing at all.
+      const gone = missingDeclaredOf(manifest, files, skipped);
+      if (unread.length || minified.length || bare.length || gone.length) {
+        const why = gone.length
+          ? `manifest.json names ${gone.length} file(s) that are not in this directory (${gone[0].key}: ${gone[0].path}), so the code that uses these permissions is not here to be read`
+          : unread.length
           ? `${unread.length} code file(s) in this package were not read (${unread[0].path}: ${unread[0].why}), so this scan did not see all of your code`
           : bare.length
             ? `this directory is pre-build source rather than a packaged extension (${bare[0].file}:${bare[0].line} imports "${bare[0].spec}"), so the code that uses these may be inside a dependency that is not here`
@@ -403,7 +506,7 @@ export const RULES = [
   {
     id: "listing-metadata",
     category: "no-metadata",
-    run({ manifest, files = [], i18nUnresolved = [] }) {
+    run({ manifest, files = [], skipped = [], i18nUnresolved = [] }) {
       if (!manifest) return [];
       // EVERY CHECK IN THIS RULE REASONS FROM AN ABSENCE, which makes it the one
       // rule most easily wrong about a directory that is not the final package.
@@ -432,7 +535,10 @@ export const RULES = [
       // plain description and fell through to the end - a green assertion about
       // a path the reported case does not take. The corpus is what caught it.
       const finish = (list) => {
-        if (!list.length || !bareOf(files).length) return list;
+        // Missing declared files count for the same reason bare imports do, and
+        // more strongly: Authenticator's _locales really is elsewhere, because
+        // the directory we were handed holds nothing but manifests.
+        if (!list.length || (!bareOf(files).length && !missingDeclaredOf(manifest, files, skipped).length)) return list;
         return list.map((f) => (f.severity !== "fail" ? f : {
           ...f,
           severity: "warn",
@@ -657,39 +763,66 @@ export const RULES = [
       // future version detects omnibox or homepage manipulation, it needs its own
       // hits list paired with its own key - not a shared any-of-three flag.
       const declared = Boolean(overrides.newtab);
-      // OPENING THE NEW TAB PAGE IS NOT OVERRIDING IT, and the rule could not
-      // tell the two apart because it asked a question about INTENT of a
-      // SUBSTRING - the line-shaped trap again, one level up from syntax.
+      if (declared) return [];
+
+      // MENTIONING THE NEW TAB PAGE IS NOT OVERRIDING IT. This rule used to fire
+      // on the URL appearing anywhere in the code, and against a corpus of 27
+      // real packages that produced FOUR findings and ZERO true positives - a
+      // rule with no demonstrated precision, at the top severity.
       //
-      // Found by running this against xifangczy/cat-catch (21k stars), which was
-      // failed at the top severity for this:
+      // The two benign shapes it could not tell from a hijack:
       //
-      //     if (tabs.length === 1) {
-      //         await chrome.tabs.create({ url: 'chrome://newtab' });
-      //         tabId ? chrome.tabs.remove(tabId) : window.close();
+      //   1. NAVIGATING TO the page. xifangczy/cat-catch (21k stars):
+      //        if (tabs.length === 1) {
+      //            await chrome.tabs.create({ url: 'chrome://newtab' });
+      //      which is the documented way to close your last tab without closing
+      //      the window.
       //
-      // That is the documented way to close your last tab without closing the
-      // window. It navigates TO the page the policy protects; hijacking is
-      // replacing what the user gets when they go there, which is the opposite
-      // movement. Telling that extension it circumvents the Overrides API is how
-      // a linter gets muted.
+      //   2. RECOGNISING the page in order to LEAVE IT ALONE, which is the more
+      //      common of the two and the one I missed on the first pass at this.
+      //      obsidianmd/obsidian-clipper (19k):
+      //        export function isBlankPage(url: string): boolean {
+      //          return url === 'about:blank' || url === 'chrome://newtab/' ...
+      //      used by isNormalPageUrl() to decide where a content script MAY be
+      //      injected. Chrome forbids content scripts on chrome:// pages, so
+      //      every careful extension has a guard like this - which means the old
+      //      rule fired hardest on the extensions being most careful.
+      //      extension-js and scriptscat/scriptcat were the same shape.
       //
-      // So the benign DESTINATION spelling is blanked before the search rather
-      // than the search being narrowed. That matters: this is a narrowing, so
-      // the risk it carries is a MISS, and blanking keeps the risk to exactly
-      // the construct proven benign. Every other spelling still fires - a
-      // comparison against the url, a tabs.update redirect, a listener filter -
-      // and blanking is offset-preserving, so a hijack sharing a LINE with a
-      // create() is still caught. The test pins both directions.
-      const visitsNtp =
-        /(?:(?:chrome|browser)\.)?(?:tabs|windows)\.create\s*\(\s*\{[^{}]*?url\s*:\s*["'`]\s*(?:chrome|about):\/\/newtab[^"'`]*["'`]|window\.open\s*\(\s*["'`]\s*(?:chrome|about):\/\/newtab[^"'`]*["'`]/gi;
+      // So the question is not whether the URL appears. It is whether the code
+      // REDIRECTS AWAY from it: the violation is replacing what the user gets
+      // when they open a new tab. That needs two things near each other - a
+      // reference to the page and a navigation - and neither alone means
+      // anything. The old rule asked for one of them.
+      //
+      // Benign DESTINATIONS are blanked first (create/open/update TO the page,
+      // all of which merely visit it), then a reference must sit within 200
+      // characters of a real tabs.update() call. The proximity window is what
+      // keeps a predicate in one function from pairing with a navigation in an
+      // unrelated one further down the file.
+      //
+      // THIS IS A NARROWING, SO THE RISK IS A MISS. Two deliberate limits, named
+      // so a later reader does not mistake them for oversights: an aliased or
+      // destructured tabs API is not matched (`chrome.` or `browser.` is
+      // required, which is also what keeps a test file's mockTabsUpdate out),
+      // and a hijack that redirects by some route other than tabs.update is not
+      // matched. Both are places to widen if a real case ever turns up; neither
+      // is worth failing 4 innocent packages to cover today.
+      const NTP = String.raw`(?:chrome|edge):\/\/newtab|about:newtab`;
+      const visitsNtp = new RegExp(
+        String.raw`(?:(?:chrome|browser)\.)?(?:tabs|windows)\.(?:create|update)\s*\([^;]{0,120}?url\s*:\s*["'\`]\s*(?:${NTP})[^"'\`]*["'\`]` +
+        "|" +
+        String.raw`window\.open\s*\(\s*["'\`]\s*(?:${NTP})[^"'\`]*["'\`]`, "gi");
       const view = codeView(files).map((f) => {
         if (!isCode(f)) return f;
         const text = blank(f.text, visitsNtp);
         return { ...f, text, lines: text.split("\n") };
       });
-      const hits = grep(view, /chrome:\/\/newtab|["'`]about:newtab|chrome\.tabs\.update\([^)]*newtab/i, isCode);
-      if (!hits.length || declared) return [];
+      const redirect = String.raw`(?:chrome|browser)\.tabs\.update\s*\(`;
+      const hits = grepAcross(view, new RegExp(
+        String.raw`(?:${NTP})[\s\S]{0,200}?${redirect}` + "|" + String.raw`${redirect}[\s\S]{0,200}?(?:${NTP})`,
+        "gi"), isCode);
+      if (!hits.length) return [];
       return [finding({
         severity: "fail",
         title: "The code touches the New Tab Page without declaring the official override",
