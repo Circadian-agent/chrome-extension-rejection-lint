@@ -844,5 +844,106 @@ check("cli: a supplied url is not linted as a directory",
     /no manifest\.json in this directory/.test(run(emptyDir).out));
 }
 
+// UNUSED-PERMISSIONS MUST NOT SAY "NEVER" ABOUT CODE IT COULD NOT READ (s098).
+// Found on immersive-translate's shipped dist/chrome, where the four files that
+// use storage, contextMenus and webRequest are 2.6-3.2 MB each and every one was
+// over scan.mjs's read limit. We failed the package for permissions its unread
+// code uses on every run, and the output looked entirely reasonable.
+//
+// The controls are the point of this block: the LAST case must keep firing at
+// `fail`, or the fix has simply switched the rule off and every assertion above
+// would pass just as happily on a rule that returns nothing.
+{
+  const perm = (extra) => ({
+    manifest_version: 3, name: "Perms", description: "An extension used to test permission detection.",
+    icons: { 16: "i.png" }, permissions: ["storage"], ...extra,
+  });
+  const mk = (files, manifest = perm()) => {
+    const d = mkdtempSync(join(tmpdir(), "wsl-"));
+    writeFileSync(join(d, "manifest.json"), JSON.stringify(manifest));
+    for (const [n, t] of Object.entries(files)) writeFileSync(join(d, n), t);
+    return lint(d).findings.find((f) => f.rule === "unused-permissions");
+  };
+
+  // 1. The bug itself: a minifier aliases the namespace. `Ne.storage` is a use.
+  check("unused-permissions: an aliased namespace counts as used",
+    !mk({ "app.js": 'var Ne=chrome;Ne.storage.local.get("k");' }),
+    "reported unused despite Ne.storage");
+  check("unused-permissions: a computed property access counts as used",
+    !mk({ "app.js": 'const api=chrome;api["storage"].local.get("k");' }));
+  check("unused-permissions: a destructured namespace counts as used",
+    !mk({ "app.js": 'const { storage } = chrome;\nstorage.local.get("k");' }));
+  check("unused-permissions: optional chaining counts as used",
+    !mk({ "app.js": 'globalThis.chrome?.storage?.local.get("k");' }),
+    "reported unused despite chrome?.storage");
+
+  // 2. A file we never opened cannot support the word "never". 2 MB is the limit,
+  //    so this file is deliberately over it and the permission is used INSIDE it -
+  //    exactly the shape that produced the false fail.
+  const big = mk({ "huge.js": `/*${"x".repeat(2 * 1024 * 1024)}*/\nchrome.storage.local.get("k");` });
+  check("unused-permissions: an unread oversized file demotes fail to warn",
+    big?.severity === "warn", big ? `${big.severity}: ${big.title}` : "no finding at all");
+  check("unused-permissions: ...and says the code was not read",
+    /were not read/.test(big?.detail || ""), big?.detail?.slice(0, 120));
+
+  // 3. Minified but fully read: still cannot tell renamed from absent.
+  const min = mk({ "b.js": `${"a".repeat(2500)}=1;` });
+  check("unused-permissions: a minified package demotes fail to warn",
+    min?.severity === "warn", min ? `${min.severity}: ${min.title}` : "no finding at all");
+
+  // 4. THE CONTROL THAT MUST STILL FAIL. Small, unminified, fully read, and the
+  //    permission genuinely appears nowhere - the commonest true positive, a
+  //    feature deleted with its permission left behind.
+  const gone = mk({ "app.js": 'chrome.storage.local.get("k"); // the bookmarks feature was removed' },
+    perm({ permissions: ["storage", "bookmarks"] }));
+  check("unused-permissions: a genuinely absent permission is still a fail",
+    gone?.severity === "fail" && /bookmarks/.test(gone.title),
+    gone ? `${gone.severity}: ${gone.title}` : "no finding at all");
+  check("unused-permissions: ...and does not drag in the used one",
+    !/storage/.test(gone?.title || ""), gone?.title);
+
+  // 5. A SOURCE TREE. The permission's call site is inside a dependency that is
+  //    not on disk, which is why refined-github was failed for scripting and
+  //    alarms. The bare import is the tell.
+  const src = mk({ "app.js": 'import debounce from "debounce-fn";\nchrome.storage.local.get("k");' },
+    perm({ permissions: ["storage", "alarms"] }));
+  check("unused-permissions: a bare import demotes fail to warn",
+    src?.severity === "warn", src ? `${src.severity}: ${src.title}` : "no finding at all");
+  check("unused-permissions: ...and says the directory is pre-build source",
+    /pre-build source/.test(src?.detail || ""), src?.detail?.slice(0, 140));
+}
+
+// THE SOURCE-TREE RULE ITSELF. It must fire on what a bundler reads and stay
+// silent on what it produces, or it is just noise on every clean package.
+{
+  const mkdir = (files) => {
+    const d = mkdtempSync(join(tmpdir(), "wsl-"));
+    writeFileSync(join(d, "manifest.json"), JSON.stringify({
+      manifest_version: 3, name: "Src", description: "An extension used to test source detection.",
+      icons: { 16: "i.png" }, permissions: ["storage"],
+    }));
+    for (const [n, t] of Object.entries(files)) writeFileSync(join(d, n), t);
+    return lint(d).findings.find((f) => f.rule === "unbuilt-source");
+  };
+  const f = mkdir({ "app.js": 'import x from "clsx";\nchrome.storage.local.get("k");' });
+  check("unbuilt-source: a bare module import is caught", !!f, "no finding");
+  check("unbuilt-source: ...as a warning, not a failure", f?.severity === "warn", f?.severity);
+  check("unbuilt-source: ...names the specifier that cannot resolve", /clsx/.test(f?.title + f?.detail));
+  check("unbuilt-source: ...and cites no policy, because it is not a policy finding",
+    !f?.citation, JSON.stringify(f?.citation)?.slice(0, 60));
+
+  // THE CONTROLS. Each of these is a form a real BUILT package uses, and firing
+  // on any of them would put a warning on every clean extension - which this
+  // file's own header says is worth less than no warning at all.
+  check("unbuilt-source: a relative import is not source",
+    !mkdir({ "app.js": 'import x from "./util.js";\nchrome.storage.local.get("k");' }));
+  check("unbuilt-source: an absolute path is not source",
+    !mkdir({ "app.js": 'import x from "/lib/util.js";\nchrome.storage.local.get("k");' }));
+  check("unbuilt-source: a URL specifier is not this finding",
+    !mkdir({ "app.js": 'const m = await import("https://cdn.example.com/x.js");' }));
+  check("unbuilt-source: a package with no imports at all is silent",
+    !mkdir({ "app.js": 'chrome.storage.local.get("k");' }));
+}
+
 console.log(`\nwebstore-lint: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

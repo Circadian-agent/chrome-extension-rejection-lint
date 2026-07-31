@@ -19,7 +19,7 @@
 // must check.
 
 import { grep, grepAcross, isCode, isMarkup, codeView } from "./scan.mjs";
-import { MANIFEST_EVIDENCE } from "./audit.mjs";
+import { MANIFEST_EVIDENCE, namespaceUsed, looksMinified, bareImports } from "./audit.mjs";
 
 // Permissions whose presence means USER data is in play. Used by the disclosure
 // and privacy-policy rules. Kept explicit rather than inferred: a list you can
@@ -122,6 +122,43 @@ const finding = (o) => ({ evidence: [], ...o });
 
 export const RULES = [
 
+  // FIRST, BECAUSE IT CHANGES HOW YOU READ EVERY OTHER FINDING. If this fires,
+  // the directory is not the thing Chrome would review, and every rule that
+  // reasons from the ABSENCE of something is unreliable against it.
+  //
+  // This is a warn by the letter of the contract above: the condition requires
+  // something this tool cannot see, namely the build output. Measured on real
+  // repositories rather than imagined - 14 of 25 public MV3 projects hold no
+  // loadable extension at the path a reader would try first, and the one that
+  // reached this rule (refined-github) was failed for two permissions whose
+  // call sites are inside dependencies that are not in the repository.
+  {
+    id: "unbuilt-source",
+    // NO CATEGORY, DELIBERATELY. Every other rule names a policy category, which
+    // attaches Google's own words and a link to the matching rejection page.
+    // This finding is about whether this tool is looking at the right directory,
+    // not about anything Google requires, and citing a policy at it would be the
+    // paraphrase this file's header forbids.
+    run({ manifest, files }) {
+      if (!manifest) return [];
+      const bare = bareImports(codeView(files).filter(isCode));
+      if (!bare.length) return [];
+      const specs = [...new Set(bare.map((b) => b.spec))].slice(0, 5);
+      return [finding({
+        severity: "warn",
+        title: `This looks like source, not a packaged extension: ${bare.length >= 25 ? "25+" : bare.length} bare module import(s)`,
+        detail:
+          `Files here import module names Chrome cannot resolve (${specs.join(", ")}). A loaded extension can only ` +
+          "import a relative path, so this directory is what a bundler reads rather than what it produces, and it " +
+          "would not run if you submitted it. Point this tool at your BUILD OUTPUT instead - commonly dist/ or " +
+          "build/, .output/chrome-mv3 under wxt, build/chrome-mv3-prod under Plasmo. Until you do, treat every " +
+          "finding below with care and the absence of a finding with more: the code that would have triggered it " +
+          "may be in a dependency that is not in this directory.",
+        evidence: bare.slice(0, 5).map((b) => ({ file: b.file, line: b.line, match: b.spec, text: b.text })),
+      })];
+    },
+  },
+
   {
     id: "manifest-v2",
     category: "additional-requirements-for-manifest-v3",
@@ -198,7 +235,7 @@ export const RULES = [
   {
     id: "unused-permissions",
     category: "excessive-permissions",
-    run({ manifest, files }) {
+    run({ manifest, files, skipped = [] }) {
       if (!manifest) return [];
       const declared = [...(manifest.permissions || []), ...(manifest.optional_permissions || [])];
       // Comments blanked first. A permission whose only trace is "// we used to
@@ -206,17 +243,62 @@ export const RULES = [
       // unused permission - the feature was deleted and the note left behind -
       // and reading raw text made this rule blind to exactly that case while
       // audit.mjs reported it. Shared with audit.mjs so the two cannot disagree.
-      const code = codeView(files).filter(isCode).map((f) => f.text).join("\n");
+      const view = codeView(files).filter(isCode);
+      const code = view.map((f) => f.text).join("\n");
       const unused = declared.filter((p) => {
         const apis = PERMISSION_API[p];
         if (!apis) return false; // unknown permission: say nothing rather than guess
-        if (apis.some((a) => code.includes(a))) return false;
+        // Not a literal `chrome.storage` test: a minifier aliases the namespace
+        // and the literal test then reads as "never used". See namespaceUsed.
+        if (namespaceUsed(code, apis)) return false;
         // Some permissions are earned by the manifest with no JavaScript at all
         // (a declarativeNetRequest static ruleset, a side_panel path). This rule
         // is a FAIL, so a false one here deletes a working feature.
         return !MANIFEST_EVIDENCE[p]?.(manifest);
       });
       if (!unused.length) return [];
+      // "NEVER USED" IS A CLAIM ABOUT ALL THE CODE, so it may only be made when
+      // all the code was read and read in a form where a name survives. Two
+      // things break that, and both were found on one real package - the shipped
+      // `dist/chrome` of immersive-translate (s098):
+      //
+      //   1. FILES WE DID NOT OPEN. scan.mjs skips anything over 2 MB and lists
+      //      what it skipped, honestly. But this rule went on asserting "never"
+      //      anyway, and on that package the skipped set was popup.js,
+      //      content_main.js, side-panel.js and options.js - 2.6 to 3.2 MB each,
+      //      which is to say the entire application. We read the leftovers and
+      //      failed it for permissions the unread files use on every run.
+      //   2. MINIFICATION, even where everything WAS read: a minifier rewrites
+      //      `chrome` to a one-letter local, so absence of a name is not absence
+      //      of a call. namespaceUsed catches the common aliases; it cannot
+      //      catch a computed `chrome[a]`.
+      //
+      // Either way the honest report is the same finding at the severity the
+      // evidence carries - something for the developer to check against their
+      // source, not a defect we claim to have found. Silence would be wrong too:
+      // a permission left behind by a deleted feature is still the commonest
+      // true positive, and it looks exactly like this.
+      const unread = skipped.filter((s) => /\.(js|mjs|cjs|ts|jsx|tsx|html?)$/i.test(s.path || ""));
+      const minified = looksMinified(view);
+      const bare = bareImports(view);
+      if (unread.length || minified.length || bare.length) {
+        const why = unread.length
+          ? `${unread.length} code file(s) in this package were not read (${unread[0].path}: ${unread[0].why}), so this scan did not see all of your code`
+          : bare.length
+            ? `this directory is pre-build source rather than a packaged extension (${bare[0].file}:${bare[0].line} imports "${bare[0].spec}"), so the code that uses these may be inside a dependency that is not here`
+            : `this package is bundled or minified (${minified[0].file} runs to ${minified[0].longestLine} characters on one line), and a minifier rewrites chrome.* into short local names`;
+        return [finding({
+          severity: "warn",
+          title: `Cannot confirm these permissions are used: ${unused.join(", ")}`,
+          detail:
+            "Google's stated trigger is asking for a permission you do not use. This is a warning and not a " +
+            `failure because ${why}. That makes "unused" and "unseen" indistinguishable here, and deleting a ` +
+            "permission your extension turns out to need breaks the feature it exists for. Check each of these " +
+            "against your SOURCE. If a feature really did go away and the permission stayed, remove it, or move " +
+            "it to optional_permissions and request it at the moment the feature runs.",
+          evidence: unused.map((p) => ({ file: "manifest.json", line: 1, text: `"${p}"` })),
+        })];
+      }
       return [finding({
         severity: "fail",
         title: `Declared but never used: ${unused.join(", ")}`,

@@ -67,6 +67,72 @@ export const PERMISSION_API = {
   declarativeNetRequest: ["chrome.declarativeNetRequest", "browser.declarativeNetRequest"],
 };
 
+// Does the packaged code use this permission's namespace?
+//
+// A LITERAL `chrome.storage` TEST IS NOT ENOUGH, and a real shipped bundle is
+// what proved it (s098). immersive-translate's `dist/chrome` package reaches the
+// same APIs as `Ne.storage`, `je.storage` and `v.webRequest`, because aliasing a
+// repeated global is the first thing any minifier does. We reported storage,
+// contextMenus and webRequest as "declared but never used" - at severity FAIL -
+// on an extension that uses all three. Nothing about that output looked wrong.
+//
+// THE ASYMMETRY DECIDES THE DESIGN, and it runs the opposite way to the rest of
+// this linter. Elsewhere a false pass is the cheap error. Here a missed unused
+// permission is only silence, while a false one tells a developer to delete a
+// permission their extension needs - so every ambiguous form resolves toward
+// USED. The matcher is deliberately looser than a parser would be: a property
+// access on ANY identifier counts, not only one on `chrome`. That costs real
+// recall - `.tabs` on an unrelated object is enough to keep us quiet - and the
+// trade is taken knowingly, because the commonest true positive is a permission
+// left behind when a feature was deleted, and that leaves no reference of any
+// kind for any of these patterns to match.
+export function namespaceUsed(code, apis) {
+  if (!apis?.length) return false;
+  if (apis.some((a) => code.includes(a))) return true; // chrome.storage, browser.storage
+  const leaf = apis[0].split(".").pop();
+  if (!leaf) return false;
+  const n = leaf.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return (
+    // `\??\.` because optional chaining defeats a plain dot, and it is not an
+    // exotic form: refined-github probes `globalThis.chrome?.contextMenus`, and
+    // both this pattern and the literal `chrome.contextMenus` test missed it.
+    new RegExp(`[\\w$)\\]]\\s*\\??\\.\\s*${n}\\b`).test(code) || // Ne.storage, chrome?.storage, getApi().storage
+    new RegExp(`\\[\\s*["'\`]${n}["'\`]\\s*\\]`).test(code) || // chrome["storage"]
+    new RegExp(`\\{[^{}]*\\b${n}\\b[^{}]*\\}\\s*=`).test(code) // const { storage } = chrome
+  );
+}
+
+// Imports of a BARE module specifier - `import x from "clsx"` rather than
+// "./util.js". Chrome resolves no such name, so a directory containing one is
+// pre-build source and not a package that could ever load.
+//
+// THIS IS THE OTHER HALF OF "WE DID NOT READ ALL THE CODE", and it is the one
+// that survived every earlier fix. refined-github's `source/` declares
+// scripting and alarms and calls neither - because the calls are inside
+// `webext-dynamic-content-scripts` and friends, which live in node_modules and
+// are not in the repository at all. We failed it for permissions its own
+// dependencies use. T-0403 already tells the reader in the README to point this
+// tool at dist/ or .output/chrome-mv3; prose next to a tool does not travel, so
+// the tool now checks.
+export function bareImports(files) {
+  const out = [];
+  const pat = /(?:\bfrom\s*|\bimport\s*\(?\s*)["']([^"']+)["']/g;
+  for (const f of files) {
+    if (!isCode(f) || !/\.(js|mjs|cjs|ts|jsx|tsx)$/i.test(f.path)) continue;
+    for (let i = 0; i < f.lines.length; i++) {
+      for (const m of f.lines[i].matchAll(pat)) {
+        const spec = m[1];
+        // Relative and absolute paths resolve; anything with a scheme is a URL,
+        // which is a different finding (remote-code) and not this one.
+        if (/^[./]/.test(spec) || spec.includes(":")) continue;
+        out.push({ file: f.path, line: i + 1, spec, text: f.lines[i].trim().slice(0, 160) });
+        if (out.length >= 25) return out;
+      }
+    }
+  }
+  return out;
+}
+
 // SOME PERMISSIONS ARE EARNED BY THE MANIFEST, WITH NO JAVASCRIPT AT ALL, and
 // missing that produced a false "unused" on the two below - advice that would
 // have broken the very feature the permission exists for.
@@ -138,7 +204,7 @@ function callSites(files, needles) {
 // bundle is not an absence in the source. Detected and declared, never assumed
 // away - an audit that reports a confident zero over a bundle is the same class
 // of error as a health check that passes on failure.
-function looksMinified(files) {
+export function looksMinified(files) {
   const suspect = [];
   for (const f of files) {
     if (!isCode(f)) continue;
