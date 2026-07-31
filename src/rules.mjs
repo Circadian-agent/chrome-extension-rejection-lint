@@ -663,7 +663,17 @@ export const RULES = [
       // oversized fixture the engine retries that star at every offset and the
       // suite hangs instead of failing. No prefix is needed - the scan already
       // finds `src` wherever it sits inside a longer identifier.
-      const SRC_ASSIGN_RE = /(?:\.\s*src\s*=|src["'`]?\s*:)\s*["'`](https?:)?\/\/[^"'`\s]+\.js(\?[^"'`\s]*)?["'`]|setAttribute\s*\(\s*["'`]src["'`]\s*,\s*["'`](https?:)?\/\/[^"'`\s]+\.js(\?[^"'`\s]*)?["'`]/i;
+      // `.js.gz` IS A SCRIPT AND WAS INVISIBLE HERE (s123). Amplitude serves its
+      // libraries pre-compressed - `analytics-browser-2.45.5-min.js.gz` - and
+      // their own install snippet assigns exactly that to `c.src`. The old
+      // pattern required `.js` immediately before the quote, so every one of
+      // those slipped past the highest-severity rule in the tool. Allowing the
+      // suffix cannot widen the false-positive surface the `.js` requirement
+      // exists to hold back: an <img> src does not end in `.js.gz` either.
+      // Measured over the 245 roots and it adds ZERO sites there - the corpus
+      // simply contains no compressed script URLs, which is a statement about
+      // the corpus and not evidence the shape is rare in the wild.
+      const SRC_ASSIGN_RE = /(?:\.\s*src\s*=|src["'`]?\s*:)\s*["'`](https?:)?\/\/[^"'`\s]+\.js(\.gz)?(\?[^"'`\s]*)?["'`]|setAttribute\s*\(\s*["'`]src["'`]\s*,\s*["'`](https?:)?\/\/[^"'`\s]+\.js(\.gz)?(\?[^"'`\s]*)?["'`]/i;
       const srcAssign = grepAcross(files, SRC_ASSIGN_RE, isCode)
         .concat(grepLarge(oversized, SRC_ASSIGN_RE, { filter: isCode }));
       split(srcAssign, (shipped, tests) => shipped.length
@@ -680,6 +690,61 @@ export const RULES = [
         : finding({
             severity: "warn",
             title: `Code assigns a remote script URL to an element's src, but only in test files (${tests.length} site(s))`,
+            detail:
+              "Every site is in a file this tool reads as a test, which a build normally excludes. Confirm against "
+              + "your build output: if these files do ship, it is a real remote-code violation.",
+            evidence: tests,
+          }));
+
+      // A REMOTE SCRIPT URL HANDED TO A SCRIPT-LOADING CALL. The src-assignment
+      // pattern above only sees the moment a URL reaches a `src`, and a library
+      // that wraps that in a helper never writes one. Amplitude ships
+      //
+      //   e.loadScriptOnce("https://cdn.amplitude.com/libs/visual-tagging-selector-1.0.0-alpha.js.gz")
+      //
+      // in @amplitude/analytics-browser, and an MV3 extension bundling it scored
+      // `0 failing` on this tool while carrying the single most-documented
+      // rejection cause we have found: amplitude/Amplitude-TypeScript#859 names
+      // NINE separate rejections, has been open since 2024-08-24, and the URL is
+      // still present in 2.45.5 published 2026-07-28.
+      //
+      // THIS ONE PASSES THE TEST THE tesseract.js RULE FAILED (s122). There the
+      // violation was a literal and the defence was a variable, so no static
+      // rule could be fair. Here the maintainer-endorsed workaround is to
+      // REPLACE THE LITERAL with "" at build time, so a compliant build does not
+      // carry the string and a violating one does. Violation and compliance are
+      // in the same form, which is what makes the literal the deciding fact.
+      //
+      // VERBS THAT MEAN "MAKE THIS RUN", NOT "GO AND GET THIS". `fetch` and
+      // `require` were in the first draft and measured out: they dragged in
+      // scriptcat's `fetchScriptBody("https://e.com/x.user.js")` six times, and
+      // a userscript manager retrieving script TEXT is not the same act as
+      // executing it. Keyed on the call's shape, never on a vendor name (s118).
+      //
+      // Measured over the 245 real MV3 roots: 3 sites in 2 packages, every one a
+      // test fixture on a placeholder domain (example.com, example.invalid), so
+      // the all-tests branch below reports them as warn rather than accusing
+      // anyone. ZERO sites in shipped code - which means this corpus cannot
+      // exercise the rule, and that is a statement about the corpus, not
+      // evidence the rule holds (T-0436).
+      const LOAD_SCRIPT_CALL_RE = /\b(?:load|inject|append|insert|import)[A-Za-z0-9_$]*script[A-Za-z0-9_$]*\s*\(\s*["'`](https?:)?\/\/[^"'`\s]+\.js(\.gz)?(\?[^"'`\s]*)?["'`]/i;
+      const loadCall = grepAcross(files, LOAD_SCRIPT_CALL_RE, isCode)
+        .concat(grepLarge(oversized, LOAD_SCRIPT_CALL_RE, { filter: isCode }));
+      split(loadCall, (shipped, tests) => shipped.length
+        ? finding({
+            severity: "fail",
+            title: "Code passes a remote script URL to a script-loading call",
+            detail:
+              "This fetches and runs JavaScript from outside the package at runtime, which is what Google names "
+              + "first for this category. It is usually a bundled dependency rather than your own code - check the "
+              + "file path below. If the URL is a vendor default you do not use, replacing the string at build "
+              + "time is enough; otherwise the script must be vendored into the package."
+              + testNote(tests),
+            evidence: [...shipped, ...tests],
+          })
+        : finding({
+            severity: "warn",
+            title: `Code passes a remote script URL to a script-loading call, but only in test files (${tests.length} site(s))`,
             detail:
               "Every site is in a file this tool reads as a test, which a build normally excludes. Confirm against "
               + "your build output: if these files do ship, it is a real remote-code violation.",

@@ -1754,6 +1754,61 @@ check("cli: a supplied url is not linted as a directory",
   });
   check("CONTROL: a remote .js URL that is not a src is not a fail", !srcFail(docLink));
 
+  // -------------------------------------------------------------------------
+  // (1g-ii) THE COMPRESSED SCRIPT, AND THE HELPER CALL. Both shapes scored
+  // `0 failing` until s123, and between them they are the single most-documented
+  // rejection cause we have found: amplitude/Amplitude-TypeScript#859, open
+  // since 2024-08-24, names NINE separate rejections, and the URL is still in
+  // 2.45.5 published 2026-07-28.
+  const loadFail = (dir) => lint(dir).findings.find((f) => f.rule === "remote-code" && f.severity === "fail" && /script-loading call/.test(f.title));
+
+  // Amplitude serves pre-compressed, so the URL ends `.js.gz` and the `.js`
+  // requirement stepped straight over it. Their own install snippet does this.
+  const gzForm = mkExt("Measured", "An extension bundling an analytics library served pre-compressed.", {
+    "vendor.js": 'chrome.storage.local.get("k");\nvar c=document.createElement("script");\nc.src="https://cdn.amplitude.com/libs/analytics-browser-2.45.5-min.js.gz";\n',
+  });
+  check("a remote .js.gz URL assigned to src FAILs", Boolean(srcFail(gzForm)),
+    JSON.stringify(lint(gzForm).findings.map((f) => f.severity + ":" + f.title)));
+
+  // The helper form. There is no `src` anywhere in this line, which is why the
+  // pattern above cannot see it however wide its extension list gets.
+  const helperForm = mkExt("Tagged", "An extension bundling a library that loads a tagging helper at runtime.", {
+    "vendor.js": 'chrome.storage.local.get("k");\ne.loadScriptOnce("https://cdn.amplitude.com/libs/visual-tagging-selector-1.0.0-alpha.js.gz").then(function(){});\n',
+  });
+  check("a remote script URL passed to a loading helper FAILs", Boolean(loadFail(helperForm)),
+    JSON.stringify(lint(helperForm).findings.map((f) => f.severity + ":" + f.title)));
+  check("...citing the URL it found", /amplitude/.test(loadFail(helperForm)?.evidence?.[0]?.text || ""));
+
+  // importScripts in a worker is the same act under a different name.
+  const workerForm = mkExt("Worker", "An extension whose worker pulls a helper script at runtime.", {
+    "sw.js": 'chrome.storage.local.get("k");\nimportScripts("https://cdn.example.org/helper.js");\n',
+  });
+  check("importScripts of a remote URL FAILs", Boolean(loadFail(workerForm)));
+
+  // CONTROL 1: THE PACKAGED HELPER. Loading a script that ships inside the
+  // package is the ordinary case and must stay clean, or the rule is useless.
+  const localLoad = mkExt("Local", "An extension loading a helper script that ships inside the package.", {
+    "vendor.js": 'chrome.storage.local.get("k");\nloadScript(chrome.runtime.getURL("helper.js"));\n',
+    "helper.js": "window.__h=1;\n",
+  });
+  check("CONTROL: loading a packaged script via a helper is not a fail", !loadFail(localLoad));
+
+  // CONTROL 2: RETRIEVING SCRIPT TEXT IS NOT EXECUTING IT. `fetch` and
+  // `require` were in the first draft of this pattern and were measured out:
+  // they matched scriptcat's fetchScriptBody six times, and a userscript
+  // manager reading script TEXT is not the act this rule accuses anyone of.
+  const fetchText = mkExt("Manager", "An extension that downloads userscript text for the user to review.", {
+    "vendor.js": 'chrome.storage.local.get("k");\nconst body = await fetchScriptBody("https://e.com/x.user.js");\n',
+  });
+  check("CONTROL: fetching script TEXT is not a script-loading fail", !loadFail(fetchText));
+
+  // CONTROL 3: THE CDN IMAGE AGAIN, against the widened extension. `.js.gz` must
+  // not have reopened the door the `.js` requirement exists to hold shut.
+  const gzLogo = mkExt("Branded2", "An extension showing a compressed asset served from a content delivery network.", {
+    "app.js": 'chrome.storage.local.get("k");\nvar i=document.createElement("img");\ni.src = "https://cdn.example.com/logo.png.gz";\n',
+  });
+  check("CONTROL: a remote compressed IMAGE src is still not a remote-code fail", !srcFail(gzLogo));
+
   // THE GENERATED DOCUMENT IS WARN, NOT FAIL, and Rat-S/ai-chat-exporter is why:
   // it builds a downloadable export carrying KaTeX <script> tags. That runs as
   // an ordinary web page with no extension privileges. It is also the extension
