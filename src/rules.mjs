@@ -159,7 +159,19 @@ export const RULES = [
       }
       // eval and the Function constructor. `new Function()` is the one people
       // forget: it is eval wearing a different name and the policy names both.
-      const evals = grep(files, /(^|[^.\w])eval\s*\(|new\s+Function\s*\(/, isCode);
+      //
+      // `$` BELONGS IN THE EXCLUSION because it is a valid JavaScript identifier
+      // character, so `$eval` is ONE identifier and not a call to eval - exactly
+      // as `myeval` is. Without it this fired `fail` on every AngularJS package
+      // using `scope.$eval(...)`, which is an Angular expression evaluator and
+      // not the JS engine's eval at all. Found by running this rule against real
+      // third-party extensions (listen1/listen1_chrome_extension) rather than
+      // against our own fixtures, which had no `$`-prefixed identifiers in them.
+      //
+      // This NARROWS the rule, so the risk it carries is a miss rather than a
+      // wrong fail. That is the safe direction here only because `$eval` is not
+      // a JS API: there is no real string-execution path this now walks past.
+      const evals = grep(files, /(^|[^.\w$])eval\s*\(|new\s+Function\s*\(/, isCode);
       if (evals.length) {
         out.push(finding({
           severity: "fail",
@@ -300,11 +312,40 @@ export const RULES = [
       // is not there. Markup is passed through untouched by codeView, so an
       // http:// src inside an HTML comment is still reported - that one is worth
       // keeping, because a commented-out <script src> is a byte away from live.
+      // XML NAMESPACE URIs ARE IDENTIFIERS, NOT ENDPOINTS. `<svg xmlns=
+      // "http://www.w3.org/2000/svg">` and `createElementNS("http://www.w3.org/
+      // 2000/svg", ...)` never touch the network - the string is a name, and the
+      // http:// spelling is fixed by the specification, so it cannot be "fixed"
+      // to https even in principle. Reporting it told people to change a string
+      // that would break their SVG if they changed it.
+      //
+      // This was the single most common warning the tool produced against real
+      // extensions: 6 of 7 insecure-transmission hits across the corpus, in
+      // darkreader, automa, screenity, voyager and return-youtube-dislike. Every
+      // one was this namespace. Our own fixtures contained no inline SVG, which
+      // is why every test passed while the rule was wrong on real code.
+      //
+      // The list is exact prefixes of specification-defined namespaces, not a
+      // blanket w3.org exclusion: a plain-http link to a w3.org *document* is
+      // still a plain-http link and stays reported.
+      const XML_NAMESPACES = [
+        "http://www.w3.org/2000/svg",
+        "http://www.w3.org/1999/xhtml",
+        "http://www.w3.org/1999/xlink",
+        "http://www.w3.org/2000/xmlns/",
+        "http://www.w3.org/XML/1998/namespace",
+        "http://www.w3.org/1998/Math/MathML",
+        "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+        "http://www.w3.org/2001/XMLSchema",
+      ];
       const hits = grep(
         codeView(files),
         /["'`]http:\/\/(?!localhost|127\.0\.0\.1|\[::1\])[^"'`\s]+/i,
         (f) => isCode(f) || isMarkup(f),
-      );
+      ).filter((h) => {
+        const url = String(h.match || "").replace(/^["'`]/, "");
+        return !XML_NAMESPACES.some((ns) => url.startsWith(ns));
+      });
       if (!hits.length) return [];
       return [finding({
         severity: "warn",

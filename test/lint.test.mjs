@@ -98,6 +98,64 @@ writeFileSync(join(local, "manifest.json"), JSON.stringify({ manifest_version: 3
 writeFileSync(join(local, "app.js"), 'chrome.storage.local.get("k");\nconst DEV = "http://localhost:3000/api";\n');
 check("http://localhost is not reported", !ids(lint(local)).includes("insecure-transmission"));
 
+// ---------------------------------------------------------------------------
+// TWO FALSE POSITIVES FOUND BY RUNNING THIS TOOL AGAINST REAL THIRD-PARTY
+// EXTENSIONS (tools/lint_corpus.mjs) RATHER THAN AGAINST FIXTURES WE WROTE.
+// Both had passed every test here for the tool's whole life, because the shapes
+// that trigger them do not occur in our own fixtures.
+//
+// Each fix is paired with a control that must fire BOTH before and after it.
+// That is the difference between a control set and a regression detector: the
+// negative case alone would also pass if the rule stopped working entirely.
+
+// (1) `$` is a valid JS identifier character, so `$eval(` is one identifier and
+// not a call to eval. Fired `fail` on every AngularJS package.
+const dollarEval = mkdtempSync(join(tmpdir(), "wsl-"));
+writeFileSync(join(dollarEval, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "Angular", description: "An extension built on an AngularJS scope evaluator.", icons: { 16: "i.png" }, permissions: ["storage"] }));
+writeFileSync(join(dollarEval, "app.js"), 'chrome.storage.local.get("k");\nconst h = scope.$eval(attrs.customOnChange);\n');
+check("$eval( is not reported as eval(", !ids(lint(dollarEval)).includes("remote-code"));
+
+// THE CONTROLS: real string execution must still fail. If either of these ever
+// goes quiet, the narrowing above swallowed the rule rather than a false hit.
+const realEval = mkdtempSync(join(tmpdir(), "wsl-"));
+writeFileSync(join(realEval, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "Evaller", description: "An extension that executes a string as code at runtime.", icons: { 16: "i.png" }, permissions: ["storage"] }));
+writeFileSync(join(realEval, "app.js"), 'chrome.storage.local.get("k");\neval(userSupplied);\n');
+check("CONTROL: a bare eval( still fails", bySeverity(lint(realEval), "fail").includes("remote-code"));
+
+const newFn = mkdtempSync(join(tmpdir(), "wsl-"));
+writeFileSync(join(newFn, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "Constructor", description: "An extension that builds a function from a string at runtime.", icons: { 16: "i.png" }, permissions: ["storage"] }));
+writeFileSync(join(newFn, "app.js"), 'chrome.storage.local.get("k");\nreturn new Function("return " + obj.__value)();\n');
+check("CONTROL: new Function( still fails", bySeverity(lint(newFn), "fail").includes("remote-code"));
+
+// (2) XML namespace URIs are identifiers, never endpoints. The http:// spelling
+// is fixed by the spec, so this told people to change a string that would break
+// their SVG. 6 of 7 insecure-transmission hits across the real corpus were this.
+const svgNs = mkdtempSync(join(tmpdir(), "wsl-"));
+writeFileSync(join(svgNs, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "Drawing", description: "An extension that renders inline SVG into the page.", icons: { 16: "i.png" }, permissions: ["storage"] }));
+writeFileSync(join(svgNs, "app.js"), 'chrome.storage.local.get("k");\nconst el = document.createElementNS("http://www.w3.org/2000/svg", "svg");\nconst m = \'<svg xmlns="http://www.w3.org/1999/xhtml">\';\n');
+check("XML namespace URIs are not reported as insecure endpoints",
+  !ids(lint(svgNs)).includes("insecure-transmission"));
+
+// THE CONTROL: a genuinely insecure endpoint must still warn. Taken verbatim
+// from the corpus - listen1 really does call this over plain http.
+const realHttp = mkdtempSync(join(tmpdir(), "wsl-"));
+writeFileSync(join(realHttp, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "Player", description: "An extension that fetches track metadata from a remote api.", icons: { 16: "i.png" }, permissions: ["storage"] }));
+writeFileSync(join(realHttp, "app.js"), 'chrome.storage.local.get("k");\nconst t = "http://api.bilibili.com/x/player/playurl";\n');
+check("CONTROL: a real http:// endpoint still warns", ids(lint(realHttp)).includes("insecure-transmission"));
+
+// AND THE MIXED CASE, which is the one that actually matters: a package holding
+// both must still report the endpoint. A filter that drops the whole finding
+// when any namespace is present would pass both checks above and still be wrong.
+const mixed = mkdtempSync(join(tmpdir(), "wsl-"));
+writeFileSync(join(mixed, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "Both", description: "An extension that draws svg and also calls a plain http api.", icons: { 16: "i.png" }, permissions: ["storage"] }));
+writeFileSync(join(mixed, "app.js"), 'chrome.storage.local.get("k");\ndocument.createElementNS("http://www.w3.org/2000/svg", "svg");\nfetch("http://api.example.com/track");\n');
+const mixedResult = lint(mixed);
+check("CONTROL: the endpoint is still reported when a namespace sits beside it",
+  ids(mixedResult).includes("insecure-transmission"));
+check("and the namespace is not among the evidence",
+  !JSON.stringify(mixedResult.findings.find((f) => f.rule === "insecure-transmission")?.evidence || [])
+    .includes("w3.org"));
+
 // node_modules must not be scanned: a finding in a dependency is noise the
 // developer cannot act on, and it is the fastest way to get a linter muted.
 const withDeps = mkdtempSync(join(tmpdir(), "wsl-"));
