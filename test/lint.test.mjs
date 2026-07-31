@@ -1058,6 +1058,55 @@ check("cli: --quiet is accepted", run(cleanDir, "--quiet").code === 0);
 check("cli: --permissions is accepted", run(cleanDir, "--permissions").code === 0);
 check("cli: --policy is accepted", run("--policy").code === 0);
 check("cli: --help exits 0", run("--help").code === 0);
+
+// s100: --json WAS TRUNCATED TO ONE PIPE BUFFER, and the check above could not
+// see it because the clean fixture's report is under a kilobyte.
+//
+// `process.stdout` is async on a pipe and sync on a TTY, so
+// `console.log(big); process.exit()` printed in full interactively and lost
+// everything past 64 KB the moment anything consumed it. On automa's shipped
+// release package: 1,502,987 bytes to a file, 65,536 through a pipe. Our own
+// GitHub Action spawnSyncs this binary, so it was broken for every extension
+// big enough to be worth linting - it refused to call an unparseable run clean,
+// which is why this surfaced as a hard failure rather than a false green.
+//
+// THE SIZE AND THE TRANSPORT ARE BOTH PART OF THE FIXTURE, and the first
+// version of this test got the size wrong and passed against a binary it was
+// written to catch. Measured on the broken build:
+//
+//   400 sites  (137 KB)   spawnSync: PARSES      shell pipe: 65,536b, broken
+//   2000 sites (343 KB)   spawnSync: 146,176b    shell pipe: 65,536b, broken
+//
+// spawnSync drains continuously, so it only loses the race above ~146 KB - the
+// exact figure the corpus run reported. A shell pipe caps at one 64 KB buffer at
+// every size. So the report must be comfortably over BOTH thresholds, and both
+// transports are asserted: a CI runner may be either.
+{
+  const sites = 2000;
+  const lines = Array.from({ length: sites }, (_, i) => `const handler${i} = new Function("return " + payload${i});`);
+  const big = pkg({ "manifest.json": MANIFEST, "background.js": lines.join("\n") + "\n" });
+  const evidenceCount = (s) => {
+    try { return JSON.parse(s).findings.find((f) => f.rule === "remote-code")?.evidence?.length; }
+    catch { return null; }
+  };
+
+  const r = spawnSync(process.execPath, [BIN, big, "--json"], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  check("cli: a large --json report is not cut off at one pipe buffer",
+    r.stdout.length > 200_000, `${r.stdout.length} bytes`);
+  check("cli: and it is complete, parseable JSON through spawnSync", Boolean(evidenceCount(r.stdout)));
+  // Only a report that arrived whole can carry every site we planted. A count is
+  // the assertion because a truncated report still starts with valid-looking JSON.
+  check("cli: every planted site survives the write to spawnSync",
+    evidenceCount(r.stdout) === sites, `${evidenceCount(r.stdout)} of ${sites}`);
+  check("cli: the exit code still says failure", r.status === 1, String(r.status));
+
+  // The deterministic one: a real shell pipe, which is what `| jq` and every
+  // redirect in a workflow file actually is.
+  const piped = spawnSync("sh", ["-c", `${JSON.stringify(process.execPath)} ${JSON.stringify(BIN)} ${JSON.stringify(big)} --json | cat`],
+    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  check("cli: the report survives a real shell pipe intact",
+    evidenceCount(piped.stdout) === sites, `${piped.stdout.length} bytes, ${evidenceCount(piped.stdout)} of ${sites}`);
+}
 check("cli: no arguments is a usage error", run().code === 2);
 
 // An unknown flag was silently dropped, so `--permission` - one letter from the

@@ -205,8 +205,30 @@ if (policyUrl && !result.manifestError) {
   );
 }
 
+// PROCESS.EXIT() TRUNCATES A PIPE, AND THIS COST US THE WHOLE CI STORY.
+// `process.stdout` is asynchronous when fd 1 is a pipe and synchronous when it
+// is a TTY, so `console.log(big); process.exit()` prints in full interactively
+// and is cut to one 64 KB pipe buffer everywhere else. Measured on automa's
+// shipped release package: 1,502,987 bytes to a file, 65,536 through a pipe -
+// the same command, differing only in what fd 1 is, with 96% of the report
+// discarded and the exit code still 1.
+//
+// Anything that consumes --json reads a pipe by definition. That includes our
+// own GitHub Action, which spawnSyncs this file: it refuses to report a run it
+// cannot parse, so it failed loudly rather than passing a broken extension -
+// but it failed on every package big enough to matter, which is every real one.
+// Interactive use is exactly the case that cannot show this.
+//
+// So: hand the data over, WAIT for the callback that says it reached the OS,
+// and only then exit. `process.exitCode` alone is not enough here because the
+// human branch below must not also run.
 if (flags.has("--json")) {
-  console.log(JSON.stringify(result, (k, v) => (k === "files" || k === "lines" ? undefined : v), 2));
+  await new Promise((resolve) => {
+    process.stdout.write(
+      JSON.stringify(result, (k, v) => (k === "files" || k === "lines" ? undefined : v), 2) + "\n",
+      resolve,
+    );
+  });
   process.exit(result.counts.fail ? 1 : 0);
 }
 
@@ -275,4 +297,8 @@ console.log(
   "where several of these are actually satisfied, and no local tool can see them.",
 );
 console.log("webstore-lint is free and open source: https://github.com/Circadian-agent/chrome-extension-rejection-lint\n");
-process.exit(fail ? 1 : 0);
+// Same trap, same reason: the human report is also large on a real extension
+// and it is also piped (`webstore-lint . | less`, or into a file in CI). Setting
+// the code instead of calling exit() lets Node drain stdout and then leave with
+// it. Nothing runs after this line, so there is nothing to guard against.
+process.exitCode = fail ? 1 : 0;
