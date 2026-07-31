@@ -93,6 +93,54 @@ writeFileSync(join(mv2, "manifest.json"), JSON.stringify({ manifest_version: 2, 
 const mv2Result = lint(mv2);
 check("manifest v2 fails", bySeverity(mv2Result, "fail").includes("manifest-v2"));
 
+// --- concealment by position ------------------------------------------------
+//
+// The obfuscation rule's second signal. These do NOT reuse the bad fixture,
+// because that fixture already trips obfuscation on the _0x signature, so
+// ids(bad).includes("obfuscation") would pass whether this signal works or not.
+// Each case below asserts on the title, which only this signal produces.
+//
+// Shape taken from the real sample: a legitimate-looking statement, a long run
+// of spaces, then the payload on the SAME line.
+const conceal = (name, gap, opts = {}) => {
+  const d = mkdtempSync(join(tmpdir(), "wsl-"));
+  writeFileSync(join(d, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "N", description: "An extension used to test how the linter handles whitespace.", icons: { 16: "i.png" } }));
+  writeFileSync(join(d, name), opts.body ?? `const config = {};\nexport default config;${" ".repeat(gap)}globalThis.x = 1;\n`);
+  return lint(d).findings.filter((f) => f.rule === "obfuscation" && /hides code behind/.test(f.title));
+};
+
+check("concealment: 300 spaces then code is caught", conceal("a.js", 300).length === 1);
+check("concealment: it is a failure, not a warning", conceal("a.js", 300)[0]?.severity === "fail");
+check(
+  "concealment: evidence names the file, the line and what is hidden",
+  (() => {
+    const e = conceal("a.js", 300)[0]?.evidence?.[0];
+    return e && e.file === "a.js" && e.line === 2 && /globalThis\.x/.test(e.text);
+  })(),
+);
+// The threshold is 200 because 131 is the longest run measured in 48,917 real
+// files. Both sides are asserted so a change to the constant fails here rather
+// than silently widening onto real code.
+check("concealment: 199 spaces is below the measured threshold and is silent", conceal("a.js", 199).length === 0);
+check("concealment: 200 spaces is at the threshold and fires", conceal("a.js", 200).length === 1);
+// FALSE-POSITIVE CONTROLS. Each is a thing real code does that must stay clean.
+check(
+  "concealment: leading indentation is not concealment however deep",
+  conceal("a.js", 0, { body: `const a = 1;\n${" ".repeat(400)}const b = 2;\n` }).length === 0,
+);
+check(
+  "concealment: a minified one-line bundle is legal and stays clean",
+  conceal("a.js", 0, { body: `${"var a=1;b(a);c(a);".repeat(2000)}\n` }).length === 0,
+);
+// This one guards the implementation, not the developer: codeView() blanks
+// comments by overwriting them with spaces of the SAME length, so a rule that
+// read the code view instead of the raw text would manufacture a 400-space run
+// out of this comment and report a false positive on it.
+check(
+  "concealment: a long comment is not turned into a gap by comment blanking",
+  conceal("a.js", 0, { body: `const a = 1; /* ${"x".repeat(400)} */ const b = 2;\n` }).length === 0,
+);
+
 // localhost over http is normal in development and must not be a finding, or
 // every extension with a dev server reads as a privacy violation.
 const local = mkdtempSync(join(tmpdir(), "wsl-"));

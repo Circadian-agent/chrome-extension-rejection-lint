@@ -995,6 +995,45 @@ export const RULES = [
       // by Google, so line length alone is NOT reported: a webpack bundle is one
       // long line and is perfectly legal.
       for (const f of files.filter(isCode)) {
+        // CONCEALMENT BY POSITION, which the _0x signature below does not see.
+        // Found because the one piece of live malware this project has ever
+        // caught (a repo in the scan corpus) hid 8.6 KB of loader after 507
+        // spaces on the same line as a legitimate `export default config`. In an
+        // editor and in a GitHub diff the line reads as normal; the payload is
+        // simply off the right-hand edge. That sample scored ZERO on every rule
+        // we had except remote-code, which caught the trailing eval( rather than
+        // the concealment.
+        //
+        // THE THRESHOLD IS MEASURED, NOT GUESSED. Across 48,917 code files in
+        // 287 corpus repos the longest mid-line whitespace run in legitimate
+        // code is 131 (SVG path data in generated octicon components); the
+        // malware is 507; the band between is EMPTY. 200 sits in that gap, so
+        // this fired once in 48,917 files and that once was the malware.
+        //
+        // Anchored on \S both sides: indentation is at line START and is not
+        // this. And it reads f.text RAW on purpose - codeView() blanks comments
+        // by overwriting them with spaces of equal length, so running this over
+        // a code view would manufacture the signal out of any long comment.
+        const RUN = 200;
+        const hidden = new RegExp(`\\S[ \\t]{${RUN},}\\S`, "g");
+        let m;
+        while ((m = hidden.exec(f.text))) {
+          const gap = m[0].length - 2;
+          const line = f.text.slice(0, m.index).split("\n").length;
+          const after = f.text.slice(m.index + m[0].length - 1, m.index + m[0].length + 119);
+          out.push(finding({
+            severity: "fail",
+            title: `${f.path} hides code behind ${gap} spaces on line ${line}`,
+            detail:
+              "There is a run of whitespace on this line long enough that everything after it is off the " +
+              "right-hand edge in an editor, a diff and a code review, and then the line continues with more " +
+              "code. Formatting does not produce this and minifiers strip whitespace rather than add it. " +
+              "Open the line and read past the gap: if you did not put that code there, treat the package as " +
+              "compromised and check what else changed in the same commit.",
+            evidence: [{ file: f.path, line, text: `${gap} spaces, then: ${after.trim().slice(0, 110)}` }],
+          }));
+          hidden.lastIndex = m.index + m[0].length;
+        }
         const hexNames = (f.text.match(/_0x[0-9a-f]{4,}/gi) || []).length;
         if (hexNames >= 10) {
           out.push(finding({
