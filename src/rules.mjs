@@ -118,6 +118,28 @@ export function declaredHosts(manifest) {
 
 const finding = (o) => ({ evidence: [], ...o });
 
+// Replace every match with the same number of characters, keeping newlines
+// where they are. Offsets and line numbers survive, so a hit found AFTER
+// blanking still points at the right line - which is the whole reason this
+// blanks rather than deletes. Same idea as stripComments() in scan.mjs: a
+// construct that must not be searched is erased in place, not cut out.
+function blank(text, re) {
+  return text.replace(re, (m) => m.replace(/[^\n]/g, " "));
+}
+
+// ONE implementation of "is this directory a source tree", shared by the two
+// rules that ask. It is memoised on the files array rather than plumbed through
+// the context on purpose: a seam that a caller has to remember to fill is a
+// seam that silently reads empty the first time somebody forgets (T-0291), and
+// the failure would be this rule quietly never firing.
+const bareCache = new WeakMap();
+function bareOf(files) {
+  if (bareCache.has(files)) return bareCache.get(files);
+  const v = bareImports(codeView(files).filter(isCode));
+  bareCache.set(files, v);
+  return v;
+}
+
 // ---------------------------------------------------------------------------
 
 export const RULES = [
@@ -141,7 +163,7 @@ export const RULES = [
     // paraphrase this file's header forbids.
     run({ manifest, files }) {
       if (!manifest) return [];
-      const bare = bareImports(codeView(files).filter(isCode));
+      const bare = bareOf(files);
       if (!bare.length) return [];
       const specs = [...new Set(bare.map((b) => b.spec))].slice(0, 5);
       return [finding({
@@ -155,6 +177,54 @@ export const RULES = [
           "finding below with care and the absence of a finding with more: the code that would have triggered it " +
           "may be in a dependency that is not in this directory.",
         evidence: bare.slice(0, 5).map((b) => ({ file: b.file, line: b.line, match: b.spec, text: b.text })),
+      })];
+    },
+  },
+
+  // SECOND, AND FOR THE SAME REASON AS unbuilt-source: it decides whether the
+  // findings under it are about a package at all. That rule catches a source
+  // tree by its imports; this one catches a MANIFEST FRAGMENT, which has no
+  // imports to give it away and which the import test therefore walks straight
+  // past.
+  //
+  // `name` and `version` are the two keys Chrome requires of every manifest, so
+  // a file missing either cannot load - it is not a strict manifest that needs
+  // fixing, it is an input a build step merges into one. Measured on real
+  // repositories rather than imagined: darkreader ships src/manifest.json at MV2
+  // plus src/manifest-chrome-mv3.json holding ONLY the MV3 deltas (no name, no
+  // version, no description), and automa ships src/manifest.chrome.json with a
+  // name but no version - both assemble the real thing at build time.
+  //
+  // What this replaces is the reason it exists. Both of those repositories were
+  // being told "manifest.json has no description" at severity FAIL, which is a
+  // true sentence about the file and a wrong diagnosis of the situation: it
+  // sends someone to add a description to a fragment that is not supposed to
+  // have one, and it never mentions the two keys whose absence actually matters.
+  //
+  // WARN, not fail, on the same contract as unbuilt-source: distinguishing "a
+  // fragment" from "a manifest with a real mistake in it" needs the build output,
+  // which this tool cannot see.
+  {
+    id: "incomplete-manifest",
+    // NO CATEGORY, deliberately, exactly as unbuilt-source. This is a finding
+    // about where the tool is pointed, not about anything Google requires, and
+    // attaching a policy quote to it would be a paraphrase of a rule that does
+    // not cover this.
+    run({ manifest }) {
+      if (!manifest) return [];
+      const missing = ["name", "version"].filter((k) => !String(manifest[k] ?? "").trim());
+      if (!missing.length) return [];
+      return [finding({
+        severity: "warn",
+        title: `manifest.json declares no ${missing.join(" and no ")}, so this is a build fragment rather than a package Chrome can load`,
+        detail:
+          `Chrome requires ${missing.join(" and ")} in every manifest and refuses to load a package without ` +
+          "them, so a file missing them is almost always one input to a build step that merges several manifests " +
+          "into the real one - a chrome-only variant, or a base shared with Firefox. Point this tool at your BUILD " +
+          "OUTPUT, or at the unzipped package you would upload. Until you do, treat every finding below with care " +
+          "and the ABSENCE of a finding with more: checks that read your name, version, description or icons are " +
+          "reading a file that was never meant to hold them.",
+        evidence: missing.map((k) => ({ file: "manifest.json", line: 1, text: `${k} absent` })),
       })];
     },
   },
@@ -333,8 +403,46 @@ export const RULES = [
   {
     id: "listing-metadata",
     category: "no-metadata",
-    run({ manifest, i18nUnresolved = [] }) {
+    run({ manifest, files = [], i18nUnresolved = [] }) {
       if (!manifest) return [];
+      // EVERY CHECK IN THIS RULE REASONS FROM AN ABSENCE, which makes it the one
+      // rule most easily wrong about a directory that is not the final package.
+      // A fragment is not missing a description, it is a file that never carried
+      // one; incomplete-manifest says so in the words that lead somewhere, and
+      // repeating it here as "no description" at FAIL is the wrong diagnosis
+      // that rule exists to replace.
+      if (!String(manifest.name ?? "").trim() || !String(manifest.version ?? "").trim()) return [];
+
+      // "MISSING" IS A CLAIM ABOUT THE PACKAGE YOU WOULD UPLOAD, so it is a warn
+      // when that package has not been built. Same move, and the same reasoning,
+      // as unused-permissions downgrading "never used" when it could not read
+      // all the code.
+      //
+      // The case that forced it: Nagi-ovo/voyager was failed for a __MSG_extName__
+      // that "does not resolve", on a tree whose messages.json files sit in
+      // src/locales/ and are copied to _locales/ by the build. The sentence is
+      // true of the directory and false of the extension, and it was the highest
+      // severity this tool emits.
+      //
+      // APPLIED AT ONE EXIT ON PURPOSE. This started life at the bottom of the
+      // rule and was dead for the real case: a manifest whose DESCRIPTION is a
+      // placeholder returns early a few lines below, which is precisely the
+      // shape voyager has, so the downgrade never ran on the extension that
+      // motivated it. The unit test passed anyway because its fixture used a
+      // plain description and fell through to the end - a green assertion about
+      // a path the reported case does not take. The corpus is what caught it.
+      const finish = (list) => {
+        if (!list.length || !bareOf(files).length) return list;
+        return list.map((f) => (f.severity !== "fail" ? f : {
+          ...f,
+          severity: "warn",
+          detail: `${f.detail ? `${f.detail} ` : ""}Reported as a warning rather than a failure because this ` +
+            "directory looks like source rather than a built package (see unbuilt-source above), and a build step " +
+            "commonly supplies exactly these files - _locales/ is frequently copied in from elsewhere in the tree. " +
+            "Re-run against your build output to get a definite answer.",
+        }));
+      };
+
       const out = [];
       // A __MSG_ placeholder that resolves to nothing is not a short description,
       // it is a package that does not load - Chrome rejects it before a reviewer
@@ -355,7 +463,7 @@ export const RULES = [
         }));
       }
       const desc = (manifest.description || "").trim();
-      if (/__MSG_[A-Za-z0-9_@]+__/.test(desc)) return out; // unresolved: nothing honest to measure
+      if (/__MSG_[A-Za-z0-9_@]+__/.test(desc)) return finish(out); // unresolved: nothing honest to measure
       if (!desc) {
         out.push(finding({
           severity: "fail",
@@ -379,7 +487,7 @@ export const RULES = [
           evidence: [{ file: "manifest.json", line: 1, text: "icons absent" }],
         }));
       }
-      return out;
+      return finish(out);
     },
   },
 
@@ -549,7 +657,38 @@ export const RULES = [
       // future version detects omnibox or homepage manipulation, it needs its own
       // hits list paired with its own key - not a shared any-of-three flag.
       const declared = Boolean(overrides.newtab);
-      const hits = grep(codeView(files), /chrome:\/\/newtab|["'`]about:newtab|chrome\.tabs\.update\([^)]*newtab/i, isCode);
+      // OPENING THE NEW TAB PAGE IS NOT OVERRIDING IT, and the rule could not
+      // tell the two apart because it asked a question about INTENT of a
+      // SUBSTRING - the line-shaped trap again, one level up from syntax.
+      //
+      // Found by running this against xifangczy/cat-catch (21k stars), which was
+      // failed at the top severity for this:
+      //
+      //     if (tabs.length === 1) {
+      //         await chrome.tabs.create({ url: 'chrome://newtab' });
+      //         tabId ? chrome.tabs.remove(tabId) : window.close();
+      //
+      // That is the documented way to close your last tab without closing the
+      // window. It navigates TO the page the policy protects; hijacking is
+      // replacing what the user gets when they go there, which is the opposite
+      // movement. Telling that extension it circumvents the Overrides API is how
+      // a linter gets muted.
+      //
+      // So the benign DESTINATION spelling is blanked before the search rather
+      // than the search being narrowed. That matters: this is a narrowing, so
+      // the risk it carries is a MISS, and blanking keeps the risk to exactly
+      // the construct proven benign. Every other spelling still fires - a
+      // comparison against the url, a tabs.update redirect, a listener filter -
+      // and blanking is offset-preserving, so a hijack sharing a LINE with a
+      // create() is still caught. The test pins both directions.
+      const visitsNtp =
+        /(?:(?:chrome|browser)\.)?(?:tabs|windows)\.create\s*\(\s*\{[^{}]*?url\s*:\s*["'`]\s*(?:chrome|about):\/\/newtab[^"'`]*["'`]|window\.open\s*\(\s*["'`]\s*(?:chrome|about):\/\/newtab[^"'`]*["'`]/gi;
+      const view = codeView(files).map((f) => {
+        if (!isCode(f)) return f;
+        const text = blank(f.text, visitsNtp);
+        return { ...f, text, lines: text.split("\n") };
+      });
+      const hits = grep(view, /chrome:\/\/newtab|["'`]about:newtab|chrome\.tabs\.update\([^)]*newtab/i, isCode);
       if (!hits.length || declared) return [];
       return [finding({
         severity: "fail",

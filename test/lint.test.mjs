@@ -716,6 +716,90 @@ check("ntp: the undeclared case still fails", bySeverity(lint(ntpBare), "fail").
 check("ntp: the official chrome_url_overrides.newtab is still accepted",
   !ids(lint(pkg({ "manifest.json": { ...ntpBase, chrome_url_overrides: { newtab: "newtab.html" } }, "sw.js": NTP_CODE }))).includes("ntp-override"));
 
+// VISITING THE NEW TAB PAGE IS NOT OVERRIDING IT. Taken verbatim from
+// xifangczy/cat-catch, which this rule failed at severity FAIL for the ordinary
+// "keep the window open when closing the last tab" idiom.
+//
+// The pair is the point and neither half means anything alone: the same two
+// files differ only in whether the newtab url is a DESTINATION or a thing being
+// compared against, which is the distinction the rule is supposed to encode. A
+// narrowing that also silenced the hijack would pass the first check and fail
+// the second, so the second is what makes this a fix rather than a mute.
+const NTP_VISIT = 'function closeTab(tabId = 0) {\n  chrome.tabs.query({}, async function (tabs) {\n    if (tabs.length === 1) {\n      await chrome.tabs.create({ url: "chrome://newtab" });\n      tabId ? chrome.tabs.remove(tabId) : window.close();\n    }\n  });\n}\n';
+check("ntp: opening the new tab page to keep a window alive is not a finding",
+  !ids(lint(pkg({ "manifest.json": ntpBase, "sw.js": NTP_VISIT }))).includes("ntp-override"),
+  JSON.stringify(ids(lint(pkg({ "manifest.json": ntpBase, "sw.js": NTP_VISIT })))));
+check("ntp: window.open of the new tab page is not a finding either",
+  !ids(lint(pkg({ "manifest.json": ntpBase, "sw.js": 'window.open("chrome://newtab");\n' }))).includes("ntp-override"));
+check("ntp: THE CONTROL - the hijack in the very same file is still caught",
+  bySeverity(lint(pkg({ "manifest.json": ntpBase, "sw.js": NTP_VISIT + NTP_CODE })), "fail").includes("ntp-override"));
+// Blanking is offset-preserving precisely so this case survives: a create() and
+// a redirect sharing ONE line must not hide each other.
+check("ntp: a redirect sharing a line with a benign create is still caught",
+  bySeverity(lint(pkg({ "manifest.json": ntpBase, "sw.js": 'if (t.url === "chrome://newtab") { chrome.tabs.create({ url: "chrome://newtab" }); chrome.tabs.update(t.id, { url: "https://ours.example/" }); }\n' })), "fail").includes("ntp-override"));
+
+// 2b. FRAGMENT MANIFESTS. A file with no name and no version is an input to a
+// build step, not a package, and saying "you have no description" about one is a
+// true sentence and a wrong diagnosis. Both shapes are real: darkreader's
+// manifest-chrome-mv3.json carries only the MV3 deltas, automa's
+// manifest.chrome.json has a name but no version.
+const fragBase = { manifest_version: 3, action: { default_popup: "p.html" }, background: { service_worker: "sw.js" } };
+for (const [name, m] of [
+  ["no name and no version", fragBase],
+  ["a name but no version", { ...fragBase, name: "Automa" }],
+]) {
+  const r = lint(pkg({ "manifest.json": m, "sw.js": "chrome.storage.local.get();\n" }));
+  check(`fragment: ${name} is reported as a build fragment`,
+    ids(r).includes("incomplete-manifest"), JSON.stringify(ids(r)));
+  check(`fragment: ${name} is NOT misdiagnosed as a missing description`,
+    !r.findings.some((f) => /no description/.test(f.title)),
+    JSON.stringify(r.findings.map((f) => f.title)));
+  check(`fragment: ${name} is a warn, because telling the two apart needs the build`,
+    !bySeverity(r, "fail").includes("incomplete-manifest"));
+}
+// THE FALSE-POSITIVE CONTROL. A complete manifest that genuinely has no
+// description must still be failed for it - otherwise the guard above has not
+// narrowed the diagnosis, it has deleted the check.
+const noDesc = lint(pkg({ "manifest.json": { ...fragBase, name: "Real", version: "1.0.0", icons: { 16: "i.png" } }, "sw.js": "chrome.storage.local.get();\n" }));
+check("fragment: THE CONTROL - a complete manifest with no description still fails",
+  bySeverity(noDesc, "fail").includes("listing-metadata") && noDesc.findings.some((f) => /no description/.test(f.title)),
+  JSON.stringify(noDesc.findings.map((f) => `${f.severity}:${f.title}`)));
+check("fragment: a complete manifest is not called a fragment",
+  !ids(noDesc).includes("incomplete-manifest"));
+
+// 2c. AN ABSENCE IS NOT EVIDENCE WHEN THE PACKAGE HAS NOT BEEN BUILT. voyager
+// was failed for a __MSG_extName__ that "does not resolve" on a tree whose
+// messages.json sits in src/locales/ and is copied to _locales/ by the build.
+const i18nSrc = { manifest_version: 3, name: "__MSG_extName__", version: "1.0.0", default_locale: "en", description: "A perfectly ordinary description of one purpose.", icons: { 16: "i.png" } };
+const unbuilt = lint(pkg({ "manifest.json": i18nSrc, "sw.js": 'import { x } from "webext-storage";\nx();\n' }));
+check("unbuilt i18n: the unresolved placeholder is reported as a warn, not a fail",
+  ids(unbuilt).includes("listing-metadata") && !bySeverity(unbuilt, "fail").includes("listing-metadata"),
+  JSON.stringify(unbuilt.findings.map((f) => `${f.severity}:${f.title}`)));
+check("unbuilt i18n: it still says the placeholder does not resolve",
+  unbuilt.findings.some((f) => /does not resolve/.test(f.title)));
+// THE CONTROL, and it is the same manifest: with no bare imports this is a
+// package that ships as checked in, and the unresolved placeholder really would
+// be rejected before review. The two must NOT agree.
+const built = lint(pkg({ "manifest.json": i18nSrc, "sw.js": 'chrome.storage.local.get();\n' }));
+check("unbuilt i18n: THE CONTROL - the same manifest in a real package still fails",
+  bySeverity(built, "fail").includes("listing-metadata"),
+  JSON.stringify(built.findings.map((f) => `${f.severity}:${f.title}`)));
+
+// AND THE SHAPE THE REAL EXTENSION ACTUALLY HAS, which the fixture above does
+// not: voyager's DESCRIPTION is a placeholder too, and that returns early from
+// the rule several lines before the downgrade used to sit. The check above went
+// green while the reported case stayed at FAIL, so the two fixtures differ in
+// the one thing that decides which exit is taken.
+const i18nBothSrc = { ...i18nSrc, description: "__MSG_extDescription__" };
+const unbuiltBoth = lint(pkg({ "manifest.json": i18nBothSrc, "sw.js": 'import { x } from "webext-storage";\nx();\n' }));
+check("unbuilt i18n: a placeholder DESCRIPTION takes the early exit and is still downgraded",
+  ids(unbuiltBoth).includes("listing-metadata") && !bySeverity(unbuiltBoth, "fail").includes("listing-metadata"),
+  JSON.stringify(unbuiltBoth.findings.map((f) => `${f.severity}:${f.title}`)));
+const builtBoth = lint(pkg({ "manifest.json": i18nBothSrc, "sw.js": 'chrome.storage.local.get();\n' }));
+check("unbuilt i18n: THE CONTROL on that same early exit - a real package still fails",
+  bySeverity(builtBoth, "fail").includes("listing-metadata"),
+  JSON.stringify(builtBoth.findings.map((f) => `${f.severity}:${f.title}`)));
+
 // 3. OPTIONAL PERMISSIONS. disclosure-2026 and unused-permissions both read
 // permissions AND optional_permissions; limited-use-2026 read only the first, so
 // one extension was told its history access was in scope for disclosure and not
