@@ -305,5 +305,69 @@ const propsOf = (line) => parseAnnotation(line)?.props ?? {};
   check("exitCodeFor: unreadable beats never", exitCodeFor(res(1, 0, "gone"), "never") === 1);
 }
 
+// --- action.yml metadata, which the Marketplace validates before it will list us
+
+// GitHub refused the Marketplace publish on 2026-07-31 for one reason: the
+// description was 235 characters against a limit of 125. Nothing in this repo
+// could have caught that, because the limit lives at the venue and the file
+// reads fine. So the limit is asserted here.
+//
+// THE EXTRACTOR IS THE PART THAT CAN LIE. "Under 125" is also what you measure
+// when you extract nothing at all, so it is exercised on both spellings of the
+// field with a known answer before it is pointed at the real file: the old
+// folded block must come back at 235, and it must survive being rewritten as a
+// quoted one-liner. A guard whose failure mode is silently measuring "" would
+// pass forever on any reformat.
+const MARKETPLACE_DESCRIPTION_MAX = 125;
+
+function yamlDescription(text) {
+  const lines = text.split("\n");
+  const i = lines.findIndex((l) => /^description:/.test(l));
+  if (i < 0) throw new Error("no top-level description in action.yml");
+  const head = lines[i].slice("description:".length).trim();
+  if (head && !/^[>|][-+]?$/.test(head)) {
+    return head.replace(/^"([\s\S]*)"$/, "$1").replace(/^'([\s\S]*)'$/, "$1");
+  }
+  const folded = [];
+  for (let j = i + 1; j < lines.length; j++) {
+    if (!/^\s+\S/.test(lines[j])) break;
+    folded.push(lines[j].trim());
+  }
+  return folded.join(" ");
+}
+
+{
+  const OLD_FOLDED = [
+    "description: >-",
+    "  Check an unpacked Chrome extension against the Chrome Web Store program",
+    "  policies, including the 1 August 2026 updates. Findings are annotated on the",
+    "  offending line and cite Google's own rejection notification ID and verbatim",
+    "  policy text.",
+    "author: \"Circadian-agent\"",
+  ].join("\n");
+  check("action.yml: extractor reads a folded block to its real length",
+    yamlDescription(OLD_FOLDED).length === 237, `got ${yamlDescription(OLD_FOLDED).length}`);
+  check("action.yml: extractor stops at the next key",
+    !yamlDescription(OLD_FOLDED).includes("Circadian-agent"));
+  check("action.yml: extractor unwraps a quoted one-liner",
+    yamlDescription('description: "hello there"') === "hello there");
+  check("action.yml: the limit rejects the wording GitHub rejected",
+    yamlDescription(OLD_FOLDED).length >= MARKETPLACE_DESCRIPTION_MAX);
+
+  // Read defensively: a missing file must fail this suite, not skip past it.
+  let real = null;
+  try { real = readFileSync(join(here, "..", "action.yml"), "utf8"); }
+  catch (e) { check("action.yml: is readable", false, e.message); }
+
+  if (real) {
+    const d = yamlDescription(real);
+    check(`action.yml: description fits the Marketplace limit (${d.length} chars)`,
+      d.length > 0 && d.length < MARKETPLACE_DESCRIPTION_MAX, d);
+    // Outward copy, so the same house rules as every other public surface.
+    check("action.yml: description has no em dash or accented characters",
+      !/[–—]/.test(d) && !/[^\x00-\x7F]/.test(d), d);
+  }
+}
+
 console.log(`\nwebstore-lint action: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

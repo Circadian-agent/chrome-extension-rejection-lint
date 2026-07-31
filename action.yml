@@ -9,11 +9,18 @@
 # somebody else's runner where nobody can see it. action/report.mjs holds the
 # behaviour and test/action.test.mjs covers it.
 name: "webstore-lint"
-description: >-
-  Check an unpacked Chrome extension against the Chrome Web Store program
-  policies, including the 1 August 2026 updates. Findings are annotated on the
-  offending line and cite Google's own rejection notification ID and verbatim
-  policy text.
+# GITHUB MARKETPLACE CAPS THIS AT 125 CHARACTERS and refuses the whole publish
+# until it fits (2026-07-31: the owner tried to tick the Marketplace box and got
+# "Description must be less than 125 characters" - the only thing the form
+# objected to). The old wording was 237. test/action.test.mjs measures the real
+# file so the limit is enforced here rather than remembered.
+#
+# It is also SEARCH COPY, not just metadata: the Marketplace listing is indexed
+# by GitHub search, so this reuses what s065 measured on repository search - a
+# developer in trouble types "rejection" and "rejected", never "program
+# policies". That is why the short version leads with the rejection and not with
+# the linting.
+description: "Catch Chrome Web Store rejections before you submit, with the exact policy quoted. Covers the 1 August 2026 rules."
 author: "Circadian-agent"
 
 branding:
