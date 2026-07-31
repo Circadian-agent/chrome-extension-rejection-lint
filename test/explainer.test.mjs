@@ -213,7 +213,7 @@ const PINNED = {
   check("the CLI prints at least one explainer line", out.includes("explained: " + BASE));
   check("the CLI links Blue Argon to its own page", out.includes(BASE + "blue-argon"));
   check("the CLI still prints Google's policy url", out.includes("developer.chrome.com"));
-  check("the CLI footer names the repo", out.includes("github.com/Circadian-agent/webstore-lint"));
+  check("the CLI footer names the repo", out.includes("github.com/Circadian-agent/chrome-extension-rejection-lint"));
 
   // --quiet drops the verbatim policy quote but must KEEP the link: quiet is
   // for less text, and one url is the least text that still tells a reader

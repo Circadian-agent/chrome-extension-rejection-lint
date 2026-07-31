@@ -2,9 +2,9 @@
 // webstore-lint - check an unpacked Chrome extension against the Chrome Web
 // Store program policies before you submit it.
 //
-//   npx github:Circadian-agent/webstore-lint ./my-extension
-//   npx github:Circadian-agent/webstore-lint ./my-extension --json
-//   npx github:Circadian-agent/webstore-lint ./my-extension --quiet
+//   npx github:Circadian-agent/chrome-extension-rejection-lint ./my-extension
+//   npx github:Circadian-agent/chrome-extension-rejection-lint ./my-extension --json
+//   npx github:Circadian-agent/chrome-extension-rejection-lint ./my-extension --quiet
 //
 // THE COMMAND NAMES GitHub BECAUSE THE npm NAME IS NOT PUBLISHED. npm requires a
 // human registrant. Do not print the bare `npx webstore-lint` anywhere a reader
@@ -86,7 +86,7 @@ if (flags.has("--help") || (!target && !flags.has("--policy"))) {
   webstore-lint --policy                list the policy data this build carries
 
 Not on npm yet, so the one-liner is:
-  npx github:Circadian-agent/webstore-lint <extension-directory>
+  npx github:Circadian-agent/chrome-extension-rejection-lint <extension-directory>
 
 Policy data pulled ${POLICY.datasetPulledAt}. Enforcement of the ${POLICY.enforcedFrom} updates:
 ${POLICY.enforcementQuote}
@@ -274,5 +274,5 @@ console.log(
   "This reads your package only. Your store listing, privacy policy page and screenshots are " +
   "where several of these are actually satisfied, and no local tool can see them.",
 );
-console.log("webstore-lint is free and open source: https://github.com/Circadian-agent/webstore-lint\n");
+console.log("webstore-lint is free and open source: https://github.com/Circadian-agent/chrome-extension-rejection-lint\n");
 process.exit(fail ? 1 : 0);

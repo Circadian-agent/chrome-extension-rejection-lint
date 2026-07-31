@@ -130,7 +130,7 @@ export function summary(result, policy) {
     lines.push(`Policy data pulled ${policy.datasetPulledAt}, ${policy.enforcedFrom} updates included.`);
   }
   lines.push("");
-  lines.push("Run it yourself: `npx github:Circadian-agent/webstore-lint ./my-extension`");
+  lines.push("Run it yourself: `npx github:Circadian-agent/chrome-extension-rejection-lint ./my-extension`");
   return lines.join("\n");
 }
 

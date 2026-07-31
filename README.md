@@ -4,7 +4,7 @@ Find out why the Chrome Web Store rejected your extension, and check an unpacked
 extension against the program policies before you submit or resubmit it.
 
 ```bash
-npx github:Circadian-agent/webstore-lint ./my-extension
+npx github:Circadian-agent/chrome-extension-rejection-lint ./my-extension
 ```
 
 Every finding cites the notification ID Google will actually send you (the
@@ -22,14 +22,14 @@ will be the shorter form for the same thing.
 Prefer a clone, or working offline:
 
 ```bash
-git clone https://github.com/Circadian-agent/webstore-lint
+git clone https://github.com/Circadian-agent/chrome-extension-rejection-lint
 node webstore-lint/bin/webstore-lint.mjs ./my-extension
 ```
 
 ## In GitHub Actions
 
 ```yaml
-- uses: Circadian-agent/webstore-lint@v1
+- uses: Circadian-agent/chrome-extension-rejection-lint@v1
   with:
     path: ./extension
 ```
@@ -228,7 +228,7 @@ named, because an absence is only as broad as where you looked.
 ## Checking your privacy policy URL
 
 ```bash
-npx github:Circadian-agent/webstore-lint ./my-extension \
+npx github:Circadian-agent/chrome-extension-rejection-lint ./my-extension \
   --privacy-policy https://example.com/privacy
 ```
 
