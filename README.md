@@ -4,7 +4,7 @@ Find out why the Chrome Web Store rejected your extension, and check an unpacked
 extension against the program policies before you submit or resubmit it.
 
 ```bash
-npx github:Circadian-agent/chrome-extension-rejection-lint ./my-extension
+npx webstore-lint ./my-extension
 ```
 
 Every finding cites the notification ID Google will actually send you (the
@@ -24,7 +24,7 @@ build: 18 wxt, 14 Plasmo, 8 CRXJS, and the rest bare webpack or Vite.
 So run your build first, then point at its output. Common ones:
 
 ```bash
-npm run build && npx github:Circadian-agent/chrome-extension-rejection-lint ./dist
+npm run build && npx webstore-lint ./dist
 ```
 
 `dist/`, `build/`, `.output/chrome-mv3/` (wxt) and `build/chrome-mv3-prod/`
@@ -41,12 +41,17 @@ If you see the bare `no manifest.json in this directory` with no build advice,
 that is the check working on a directory it does not recognise: there is no
 extension in it, and no policy check it could run there would mean anything.
 
-**Not on npm yet, which is why the command names GitHub.** The package is ready,
-but npm requires a human registrant and this tool is maintained by an AI agent,
-so that step waits on a person rather than on us working around the terms. `npx`
-installs straight from this repo in the meantime and there is nothing to fetch:
-the package has no dependencies. Once the name is published, `npx webstore-lint`
-will be the shorter form for the same thing.
+**On npm as of 31 July 2026: [webstore-lint](https://www.npmjs.com/package/webstore-lint).**
+This tool is maintained by an AI agent, and npm requires a human registrant, so
+the account was registered by a person rather than worked around. There is
+nothing to fetch beyond the package itself: it has no dependencies.
+
+You can also install straight from this repo, which needs no registry entry and
+lets you pin to a commit:
+
+```bash
+npx github:Circadian-agent/chrome-extension-rejection-lint ./my-extension
+```
 
 Prefer a clone, or working offline:
 
@@ -295,7 +300,7 @@ named, because an absence is only as broad as where you looked.
 ## Checking your privacy policy URL
 
 ```bash
-npx github:Circadian-agent/chrome-extension-rejection-lint ./my-extension \
+npx webstore-lint ./my-extension \
   --privacy-policy https://example.com/privacy
 ```
 

@@ -2,15 +2,18 @@
 // webstore-lint - check an unpacked Chrome extension against the Chrome Web
 // Store program policies before you submit it.
 //
-//   npx github:Circadian-agent/chrome-extension-rejection-lint ./my-extension
-//   npx github:Circadian-agent/chrome-extension-rejection-lint ./my-extension --json
-//   npx github:Circadian-agent/chrome-extension-rejection-lint ./my-extension --quiet
+//   npx webstore-lint ./my-extension
+//   npx webstore-lint ./my-extension --json
+//   npx webstore-lint ./my-extension --quiet
 //
-// THE COMMAND NAMES GitHub BECAUSE THE npm NAME IS NOT PUBLISHED. npm requires a
-// human registrant. Do not print the bare `npx webstore-lint` anywhere a reader
-// sees it until that lands: it 404s, and this help text is read by people who
-// have already got the tool working, so a wrong line here teaches them a command
-// that fails the next time they reach for it.
+// THE npm NAME LANDED 2026-07-31 (v1.0.20) and the short form is now the one to
+// print. It was deliberately withheld before that, because it 404'd, and this
+// help text is read by people who have already got the tool working - a wrong
+// line here teaches them a command that fails the next time they reach for it.
+// The same caution applies in reverse: verify against the registry before
+// changing an install line, never against the fact that a publish command was
+// run. `npx github:Circadian-agent/chrome-extension-rejection-lint` still works
+// and is the way to pin to a commit.
 //
 // EXIT CODES: 0 clean or warnings only, 1 at least one failure, 2 bad usage.
 // Warnings do not fail the run on purpose. Half of them are conditions this
@@ -85,8 +88,8 @@ if (flags.has("--help") || (!target && !flags.has("--policy"))) {
                                         and only when you pass a url
   webstore-lint --policy                list the policy data this build carries
 
-Not on npm yet, so the one-liner is:
-  npx github:Circadian-agent/chrome-extension-rejection-lint <extension-directory>
+The one-liner, no install needed:
+  npx webstore-lint <extension-directory>
 
 Policy data pulled ${POLICY.datasetPulledAt}. Enforcement of the ${POLICY.enforcedFrom} updates:
 ${POLICY.enforcementQuote}
