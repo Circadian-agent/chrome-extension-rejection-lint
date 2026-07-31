@@ -1570,5 +1570,90 @@ check("cli: a supplied url is not linted as a directory",
     hits.length === 1 && hits[0].text.includes("eval("), JSON.stringify(hits[0] && hits[0].text));
 }
 
+// ---------------------------------------------------------------------------
+// A REMOTE <script> IN A PAGE NO EXTENSION SURFACE CAN OPEN IS A WEBSITE, NOT A
+// VIOLATION (s107). Found by auditing the low-star band the s106 sampling fix
+// added: Rat-S/ai-chat-exporter was FAILed on three sites and all three were its
+// GitHub Pages site - a CDN tag in `docs/404.html` and a Tally widget in two
+// feedback pages. The manifest references nothing under `docs/`.
+//
+// THE UNIT IS THE DIRECTORY AND THE CONTROLS BELOW ARE WHY. A page opened with
+// chrome.tabs.create is never named in the manifest, so a per-file test would
+// have deleted real violations; a directory the manifest references nothing in
+// at all is a different thing entirely.
+{
+  const mkTree = (manifest, files) => {
+    const d = mkdtempSync(join(tmpdir(), "wsl-"));
+    writeFileSync(join(d, "manifest.json"), JSON.stringify({ manifest_version: 3, icons: { 16: "i.png" }, permissions: ["storage"], ...manifest }));
+    for (const [f, body] of Object.entries(files)) {
+      const full = join(d, f);
+      mkdirSync(dirname(full), { recursive: true });
+      writeFileSync(full, body);
+    }
+    return d;
+  };
+  const REMOTE = '<html><head><script src="https://cdn.tailwindcss.com"></script></head><body></body></html>\n';
+  const POPUP = { manifest_version: 3, name: "Sited", description: "An extension whose repository also holds its marketing website.", action: { default_popup: "popup/popup.html" } };
+  const rc = (dir, sev) => lint(dir).findings.find((f) => f.rule === "remote-code" && f.severity === sev && /<script>/.test(f.title));
+  const cites = (f, path) => !!f && f.evidence.some((e) => e.file === path);
+
+  const site = mkTree(POPUP, {
+    "popup/popup.html": "<html><body></body></html>\n",
+    "app.js": 'chrome.storage.local.get("k");\n',
+    "docs/404.html": REMOTE,
+  });
+  check("a remote <script> in a directory the manifest never references is not a FAIL", !rc(site, "fail"));
+  check("...it is reported as a warn instead", !!rc(site, "warn"));
+  check("...and the site is still named, not deleted", cites(rc(site, "warn"), "docs/404.html"));
+
+  // CONTROL 1: the manifest-referenced page itself. Must FAIL both before and
+  // after this change, or the partition swallowed the rule.
+  const inPopup = mkTree(POPUP, {
+    "popup/popup.html": REMOTE,
+    "app.js": 'chrome.storage.local.get("k");\n',
+  });
+  check("CONTROL: a remote <script> in the declared popup still FAILs", !!rc(inPopup, "fail"));
+
+  // CONTROL 2: the page chrome.tabs.create opens. Not in the manifest, but it
+  // sits in a directory that is - so it is part of the package.
+  const sibling = mkTree(POPUP, {
+    "popup/popup.html": "<html><body></body></html>\n",
+    "popup/help.html": REMOTE,
+    "app.js": 'chrome.storage.local.get("k");\n',
+  });
+  check("CONTROL: an undeclared page beside a declared one still FAILs", !!rc(sibling, "fail"));
+
+  // CONTROL 3: everything at the root. The root is always live, so a flat
+  // extension gets no free pass from this.
+  const flat = mkTree({ manifest_version: 3, name: "Flat", description: "An extension that keeps every one of its pages at the package root.", action: { default_popup: "popup.html" } }, {
+    "popup.html": "<html><body></body></html>\n",
+    "extra.html": REMOTE,
+    "app.js": 'chrome.storage.local.get("k");\n',
+  });
+  check("CONTROL: a page at the package root still FAILs", !!rc(flat, "fail"));
+
+  // CONTROL 4: THE BUILD THAT FLATTENS. google/archat declares
+  // `options_ui.page: "options.html"` and keeps the file at
+  // `options/options.html`, where rollup flattens it on build. A
+  // directory-only test demoted a real Google Tag Manager <script> in it. This
+  // is the regression that control exists for, and only a source-tree A/B could
+  // have found it - a built zip has no `options/` left to flatten.
+  const flattened = mkTree({ manifest_version: 3, name: "Built", description: "An extension whose build flattens its options page to the package root.", options_ui: { page: "options.html" } }, {
+    "options/options.html": REMOTE,
+    "app.js": 'chrome.storage.local.get("k");\n',
+  });
+  check("CONTROL: a page the build flattens to a declared name still FAILs", !!rc(flattened, "fail"));
+
+  // CONTROL 5: THE PARTITION IS NOT A DELETION. With a real violation present,
+  // the website site must still be reported rather than dropped on the floor.
+  const both = mkTree(POPUP, {
+    "popup/popup.html": REMOTE,
+    "app.js": 'chrome.storage.local.get("k");\n',
+    "docs/404.html": REMOTE,
+  });
+  check("CONTROL: a real violation alongside a website hit still FAILs", cites(rc(both, "fail"), "popup/popup.html"));
+  check("CONTROL: ...and the website hit is still reported, not dropped", cites(rc(both, "warn"), "docs/404.html"));
+}
+
 console.log(`\nwebstore-lint: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

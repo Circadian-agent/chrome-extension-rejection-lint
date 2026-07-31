@@ -321,7 +321,7 @@ export const RULES = [
   {
     id: "remote-code",
     category: "additional-requirements-for-manifest-v3",
-    run({ files, skipped = [], oversized = [] }) {
+    run({ manifest, files, skipped = [], oversized = [] }) {
       const out = [];
       // A TEST FILE IS NOT THE PACKAGE CHROME REVIEWS, and pretending otherwise
       // was this rule's largest source of wrong FAILs. Measured over 94 packages
@@ -357,7 +357,90 @@ export const RULES = [
       // to [\s\S]: that would run past the closing > of this tag and match a
       // remote src on some later <img>. The bug was that grep() fed it one line
       // at a time, so it was never shown a newline to cross.
-      const remoteScript = grepAcross(files, /<script[^>]+src\s*=\s*["'](https?:)?\/\/[^"']+/i, isMarkup);
+      // AN HTML FILE NO EXTENSION PAGE CAN OPEN IS A WEBSITE, NOT A VIOLATION.
+      // Rat-S/ai-chat-exporter is FAILed on three sites and all three are its
+      // GitHub Pages site: `docs/404.html` loads cdn.tailwindcss.com and two
+      // feedback pages embed a Tally widget. Nothing in that manifest references
+      // `docs/`; the package ships `popup/`, `content/`, `background/`,
+      // `options/`, `sidepanel/` and `schemas/`. So the highest-severity finding
+      // this tool produces was 100% wrong on a real extension, and a developer
+      // who deletes a CDN tag from their marketing site to satisfy us has been
+      // actively misled. Found by auditing the low-star band the s106 sampling
+      // fix added - a population the old 35-star corpus contained none of, and
+      // the one that actually gets rejected.
+      //
+      // WHY THIS IS DECIDABLE FOR MARKUP AND NOT FOR CODE. A JS file can be
+      // pulled in by any dynamic import or bundler chunk, so "unreachable" is
+      // not provable. An HTML file only executes when something OPENS it, and
+      // the manifest is where an extension declares its pages. That asymmetry is
+      // why this partition is applied to the <script src> scan alone.
+      //
+      // THE DIRECTORY, NOT THE FILE, is the unit, and deliberately so. An
+      // extension may open `popup/help.html` with `chrome.tabs.create` without
+      // ever naming it in the manifest, and that page is real. But `popup/` is a
+      // directory the manifest DOES reference, so it stays shipped. A directory
+      // the manifest references nothing in at all is the project's website,
+      // its documentation or its CI - not its page graph.
+      //
+      // AND IT PARTITIONS, IT DOES NOT DELETE - the same rule the test split
+      // follows for the same reason. Every site is still listed and still named;
+      // it just cannot carry FAIL on its own. Silence is the failure mode this
+      // repo keeps punishing.
+      // THE BASENAME IS CHECKED TOO, AND A REAL MISS IS WHY. The first version of
+      // this partition compared source-tree paths against a manifest that
+      // describes the BUILT layout, and demoted a genuine violation in
+      // google/archat: its manifest declares `options_ui.page: "options.html"`
+      // while the repository keeps that page at `options/options.html` and the
+      // rollup config flattens it on build. The directory `options/` is named
+      // nowhere in the manifest, so a directory-only test called Google's own
+      // extension a website and walked past a Google Tag Manager <script> in it.
+      // Caught by A/B-ing the change over the cached SOURCE trees - the release
+      // A/B could not have caught it, because a built zip has no `options/` to
+      // flatten. A basename match resolves the ambiguity toward FAIL, which is
+      // the safe direction for the highest-severity rule in the tool.
+      const liveDirs = new Set([""]);
+      const liveNames = new Set();
+      const collectRefs = (v) => {
+        if (typeof v === "string") {
+          if (/^(https?:|data:|\/\/)/i.test(v) || !/\.[a-z0-9]{2,5}$/i.test(v)) return;
+          const p = v.replace(/^\.?\//, "");
+          // Every ancestor of a referenced file is part of the page graph:
+          // `content/lib/*.js` makes both `content/lib` and `content` live.
+          const parts = p.split("/");
+          liveNames.add(parts[parts.length - 1].toLowerCase());
+          for (let i = parts.length - 1; i >= 0; i--) liveDirs.add(parts.slice(0, i).join("/"));
+          return;
+        }
+        if (Array.isArray(v)) { v.forEach(collectRefs); return; }
+        if (v && typeof v === "object") { Object.values(v).forEach(collectRefs); }
+      };
+      collectRefs(manifest || {});
+      const offPackage = (f) => {
+        const i = f.lastIndexOf("/");
+        if (liveNames.has(f.slice(i + 1).toLowerCase())) return false;
+        return !liveDirs.has(i < 0 ? "" : f.slice(0, i));
+      };
+
+      const remoteScriptAll = grepAcross(files, /<script[^>]+src\s*=\s*["'](https?:)?\/\/[^"']+/i, isMarkup);
+      const remoteScript = remoteScriptAll.filter((h) => !offPackage(h.file) || looksLikeTest(h.file));
+      const website = remoteScriptAll.filter((h) => offPackage(h.file) && !looksLikeTest(h.file));
+      // Emitted whenever there are any, NOT only when nothing else fired. Gating
+      // it on "no other sites" is how a partition quietly becomes a deletion:
+      // a package with one real violation and three website hits would report
+      // the one and drop the three without saying so.
+      if (website.length) {
+        out.push(finding({
+          severity: "warn",
+          title: `A <script> tag loads remote code, but only in pages your manifest never opens (${website.length} site(s))`,
+          detail:
+            "Every site is in a directory your manifest references nothing in - typically a project website, a docs "
+            + "folder or CI. Chrome only reviews what you upload, and a page no extension surface can open cannot "
+            + "run, which is why this is not a failure. Check it against the zip you actually upload: if these files "
+            + "DO ship and a page of yours opens one, it is the real violation and Google names it as the first "
+            + "trigger for this category.",
+          evidence: website,
+        }));
+      }
       split(remoteScript, (shipped, tests) => shipped.length
         ? finding({
             severity: "fail",
