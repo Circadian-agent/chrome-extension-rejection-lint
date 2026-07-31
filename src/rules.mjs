@@ -603,6 +603,111 @@ export const RULES = [
               + "build output: if these files do ship, review each site as a real remote-code risk.",
             evidence: tests,
           }));
+      // SCRIPT LOADING BUILT IN JAVASCRIPT, which the <script src> scan above
+      // cannot see because it reads MARKUP only. This is the shape real
+      // developers are actually rejected for: the violation is not a tag in
+      // their HTML, it is a dependency assembling one at runtime. Found by
+      // reading the GitHub issues where rejected developers go - the pain
+      // clusters in libraries (mixpanel-js#428, firebase-js-sdk#9114,
+      // sentry-javascript#14891), and an extension bundling mixpanel-browser
+      // 2.65.0 scored `0 failing` on this tool while carrying
+      // cdn.mxpnl.com/libs/mixpanel-recorder.min.js.
+      //
+      // A VENDOR SIGNATURE LIST WAS WRITTEN AND THEN REFUSED, on the
+      // measurement rather than on taste. Of four libraries with documented
+      // rejection issues, only mixpanel-browser and firebase still carry a
+      // literal remote URL; @sentry/browser builds its CDN path at runtime and
+      // @clerk/chrome-extension has no remote loader left at all - it was FIXED
+      // between the issue and today. A list keyed on vendor names would have
+      // shipped a wrong accusation about Clerk on its first day.
+      //
+      // TWO PATTERNS, AND THEY ARE SPLIT BY WHAT IS PROVABLE. Both are
+      // self-contained single regexes on purpose: grepLarge searches a huge file
+      // in independent windows, so any rule needing two facts from opposite ends
+      // of a 4.8 MB bundle would silently not work there - and TWO of the four
+      // extensions this fires on are over the 2 MB read limit.
+      //
+      // 1. A remote `.js` URL handed to a src PROPERTY. Requiring the `.js`
+      //    extension is what keeps the CDN-logo false positive out: an <img>
+      //    src never ends in .js, so this cannot do what the s075 widening
+      //    nearly did. TWO SPELLINGS ARE MATCHED AND A TAG USES NEITHER - a dot
+      //    (`el.src =`) or an object key (`recorder_src:`). That distinction is
+      //    load-bearing rather than cosmetic: matching a bare `src=` instead
+      //    swallowed `<script src="...">` into this tier and dragged
+      //    Rat-S/ai-chat-exporter's generated export back to FAIL, which is the
+      //    exact wrong answer case 2 exists to avoid. The key form is also the
+      //    only thing that catches the dependency class at all - mixpanel-browser
+      //    keeps its loader URL in config as `'recorder_src'` and assigns
+      //    `script.src = url` from a variable, so a dot-only pattern reports
+      //    nothing on it.
+      // 2. A `<script src=remote>` TAG inside JavaScript is only WARN, because
+      //    the string may be a document the extension GENERATES for the user
+      //    rather than one it loads. Rat-S/ai-chat-exporter builds exactly that
+      //    - a downloadable export with KaTeX headers - and it is the same
+      //    extension this rule already failed 100% wrongly once, for the
+      //    neighbouring reason. Statically the two are indistinguishable, so the
+      //    ambiguity is reported rather than resolved.
+      //
+      // Measured over 245 real MV3 extension roots before shipping: pattern 1
+      // fires on 5 sites in 2 extensions and every one is a true positive - an
+      // MV3 content script assigning hcaptcha and recaptcha api.js, and a player
+      // config holding a remote hdslb.com script. Pattern 2 fires on 14 sites in
+      // 4 extensions, of which three are real and the fourth is the generated
+      // export named above, which is why it does not fail. The generic version
+      // of this - any remote .js URL in shipped code - was measured FIRST and
+      // REFUSED at 288 sites and roughly 70 per cent noise, mostly github.com
+      // project links and example.com placeholders in fixtures.
+      // NO UNBOUNDED PREFIX BEFORE `src`, and this is a correctness bug rather
+      // than a style note. Writing the key form as `[\w$]*src` to allow
+      // `recorder_src` backtracks catastrophically: on the 2 MB padding in the
+      // oversized fixture the engine retries that star at every offset and the
+      // suite hangs instead of failing. No prefix is needed - the scan already
+      // finds `src` wherever it sits inside a longer identifier.
+      const SRC_ASSIGN_RE = /(?:\.\s*src\s*=|src["'`]?\s*:)\s*["'`](https?:)?\/\/[^"'`\s]+\.js(\?[^"'`\s]*)?["'`]|setAttribute\s*\(\s*["'`]src["'`]\s*,\s*["'`](https?:)?\/\/[^"'`\s]+\.js(\?[^"'`\s]*)?["'`]/i;
+      const srcAssign = grepAcross(files, SRC_ASSIGN_RE, isCode)
+        .concat(grepLarge(oversized, SRC_ASSIGN_RE, { filter: isCode }));
+      split(srcAssign, (shipped, tests) => shipped.length
+        ? finding({
+            severity: "fail",
+            title: "Code assigns a remote script URL to an element's src",
+            detail:
+              "This loads and runs JavaScript from outside the package at runtime, which is what Google names "
+              + "first for this category. It is often a bundled dependency rather than your own code - check the "
+              + "file path below. The referenced script must be vendored into the package."
+              + testNote(tests),
+            evidence: [...shipped, ...tests],
+          })
+        : finding({
+            severity: "warn",
+            title: `Code assigns a remote script URL to an element's src, but only in test files (${tests.length} site(s))`,
+            detail:
+              "Every site is in a file this tool reads as a test, which a build normally excludes. Confirm against "
+              + "your build output: if these files do ship, it is a real remote-code violation.",
+            evidence: tests,
+          }));
+
+      const SCRIPT_TAG_IN_CODE_RE = /<script[^>]+src\s*=\s*["'](https?:)?\/\/[^"']+/i;
+      const tagInCode = grepAcross(files, SCRIPT_TAG_IN_CODE_RE, isCode)
+        .concat(grepLarge(oversized, SCRIPT_TAG_IN_CODE_RE, { filter: isCode }));
+      if (tagInCode.length) {
+        const shipped = tagInCode.filter((h) => !looksLikeTest(h.file));
+        const tests = tagInCode.filter((h) => looksLikeTest(h.file));
+        out.push(finding({
+          severity: "warn",
+          title: `JavaScript here builds a <script> tag that loads remote code (${tagInCode.length} site(s))`,
+          detail:
+            "A script tag with a remote src is being assembled as a string in code rather than written in an HTML "
+            + "file, so the markup check above cannot see it. Answer one question: does your extension OPEN this "
+            + "document, or does it write it out for the user to keep? If the extension opens it - a preview pane, "
+            + "an injected iframe, a page it navigates to - this is a real remote-code violation and the script "
+            + "must be vendored. If it is an export or a report the user downloads and opens themselves, it runs "
+            + "as an ordinary web page with no extension privileges and this is not a violation. That distinction "
+            + "cannot be made by reading the file, which is why this is not a failure."
+            + (tests.length ? ` ${tests.length} of these site(s) are in test files.` : ""),
+          evidence: [...shipped, ...tests],
+        }));
+      }
+
       const DYN_IMPORT_RE = /import\s*\(\s*["'`](https?:)?\/\//;
       const dynImport = grepAcross(files, DYN_IMPORT_RE, isCode)
         // Not comment-blanked, matching grepAcross above: this pattern needs a

@@ -1703,5 +1703,93 @@ check("cli: a supplied url is not linted as a directory",
   check("CONTROL: ...and the website hit is still reported, not dropped", cites(rc(both, "warn"), "docs/404.html"));
 }
 
+// ---------------------------------------------------------------------------
+// (1g) SCRIPT LOADING BUILT IN JAVASCRIPT. The <script src> scan reads MARKUP
+// only, so the shape real developers are rejected for - a bundled dependency
+// assembling a loader at runtime - produced `0 failing`. An extension carrying
+// mixpanel-browser 2.65.0 scored exactly that while shipping
+// cdn.mxpnl.com/libs/mixpanel-recorder.min.js.
+{
+  const srcFail = (dir) => lint(dir).findings.find((f) => f.rule === "remote-code" && f.severity === "fail" && /assigns a remote script URL/.test(f.title));
+
+  const dotForm = mkExt("Injector", "An extension that injects a captcha widget script into the page.", {
+    "app.js": 'chrome.storage.local.get("k");\nvar s=document.createElement("script");\ns.src = "https://hcaptcha.com/1/api.js";\ndocument.head.appendChild(s);\n',
+  });
+  check("a remote .js URL assigned to el.src FAILs", Boolean(srcFail(dotForm)));
+
+  // THE DEPENDENCY FORM, and the only one that catches the motivating case.
+  // mixpanel keeps the URL in config and assigns `script.src = url` from a
+  // variable, so a dot-only pattern reports nothing on the library that
+  // actually gets people rejected.
+  const keyForm = mkExt("Analytics", "An extension bundling an analytics library that loads a recorder.", {
+    "vendor.js": "chrome.storage.local.get(\"k\");\nvar cfg={'recorder_src': 'https://cdn.mxpnl.com/libs/mixpanel-recorder.min.js'};\n",
+  });
+  check("a remote .js URL in a src-named config key FAILs", Boolean(srcFail(keyForm)),
+    JSON.stringify(lint(keyForm).findings.map((f) => f.severity + ":" + f.title)));
+  check("...citing the file and the URL", /mxpnl/.test(srcFail(keyForm)?.evidence?.[0]?.text || ""),
+    JSON.stringify(srcFail(keyForm)?.evidence));
+
+  // CONTROL 1: THE CDN LOGO. This is the false positive the s075 widening
+  // nearly shipped - a remote <img> src failing every page with a CDN logo on
+  // it. Requiring the .js extension is the whole defence, so it needs a test.
+  const cdnLogo = mkExt("Branded", "An extension showing a logo served from a content delivery network.", {
+    "app.js": 'chrome.storage.local.get("k");\nvar i=document.createElement("img");\ni.src = "https://cdn.example.com/logo.png";\n',
+  });
+  check("CONTROL: a remote image src is not a remote-code fail", !srcFail(cdnLogo));
+
+  // CONTROL 2: THE LEGITIMATE PATTERN. Injecting a PACKAGED script into page
+  // context is what content scripts do all day; 51 of the sites measured over
+  // the corpus were this. Failing it would make the rule useless.
+  const packaged = mkExt("Bridge", "An extension injecting its own bundled script into the page context.", {
+    "app.js": 'chrome.storage.local.get("k");\nvar s=document.createElement("script");\ns.src = chrome.runtime.getURL("inject.js");\ndocument.head.appendChild(s);\n',
+    "inject.js": "window.__bridge=1;\n",
+  });
+  check("CONTROL: injecting a packaged script via runtime.getURL is not a fail", !srcFail(packaged));
+
+  // CONTROL 3: A REMOTE .js URL THAT IS NOT A SCRIPT SOURCE. The generic
+  // version of this rule - any remote .js URL in shipped code - was refused at
+  // roughly 70 per cent noise, and this is what that noise looked like.
+  const docLink = mkExt("Documented", "An extension whose help text links to a library project page.", {
+    "app.js": 'chrome.storage.local.get("k");\nvar help="see https://github.com/jnordberg/gif.js for details";\n',
+  });
+  check("CONTROL: a remote .js URL that is not a src is not a fail", !srcFail(docLink));
+
+  // THE GENERATED DOCUMENT IS WARN, NOT FAIL, and Rat-S/ai-chat-exporter is why:
+  // it builds a downloadable export carrying KaTeX <script> tags. That runs as
+  // an ordinary web page with no extension privileges. It is also the extension
+  // this rule already failed 100% wrongly once, so failing it again on a
+  // neighbouring pattern is the specific mistake being avoided.
+  const genDoc = mkExt("Exporter", "An extension that writes a standalone HTML export the user downloads.", {
+    "app.js": 'chrome.storage.local.get("k");\nvar head=`<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></scr`+`ipt>`;\n',
+  });
+  const genFindings = lint(genDoc).findings.filter((f) => f.rule === "remote-code");
+  check("a <script> tag built in JS is reported", genFindings.some((f) => /builds a <script> tag/.test(f.title)),
+    JSON.stringify(genFindings.map((f) => f.severity + ":" + f.title)));
+  check("...at warn, because it may be a document the user downloads",
+    !genFindings.some((f) => f.severity === "fail"),
+    JSON.stringify(genFindings.map((f) => f.severity + ":" + f.title)));
+
+  // CONTROL 4: THE OVERSIZED PATH. Two of the four extensions this fires on in
+  // the corpus are over the 2 MB read limit, so a version wired only into
+  // grepAcross would silently lose half its yield - and would still pass every
+  // test above. Assert on the SITE, which only correct window arithmetic gives.
+  const bigSrc = mkExt("BigBundle", "An extension whose content script is a single large bundle loading a remote script.", {
+    "app.js": 'chrome.storage.local.get("k");\n',
+    "content.js": `var pad="${"x".repeat(2 * 1024 * 1024)}";\nvar s=document.createElement("script");s.src="https://cdn.example.org/tracker.js";\n`,
+  });
+  const bigFail = srcFail(bigSrc);
+  check("a remote src past the 2 MB read limit is still reported at fail", Boolean(bigFail),
+    JSON.stringify(lint(bigSrc).findings.filter((f) => f.rule === "remote-code").map((f) => f.severity + ":" + f.title)));
+  const bigSite = bigFail?.evidence?.find((e) => e.file === "content.js");
+  check("...naming the oversized file, at the line past the window boundary", bigSite?.line === 2, `line ${bigSite?.line}`);
+
+  // CONTROL 5: the streaming pass must not invent one. Same size, no violation.
+  const bigSrcClean = mkExt("BigClean", "An extension whose large content script loads nothing from the network.", {
+    "app.js": 'chrome.storage.local.get("k");\n',
+    "content.js": `var pad="${"x".repeat(2 * 1024 * 1024)}";\nvar s=document.createElement("script");s.src=chrome.runtime.getURL("in.js");\n`,
+  });
+  check("CONTROL: an oversized file with no remote src produces no fail", !srcFail(bigSrcClean));
+}
+
 console.log(`\nwebstore-lint: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
