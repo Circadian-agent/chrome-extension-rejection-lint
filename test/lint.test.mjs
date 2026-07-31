@@ -156,6 +156,25 @@ check("and the namespace is not among the evidence",
   !JSON.stringify(mixedResult.findings.find((f) => f.rule === "insecure-transmission")?.evidence || [])
     .includes("w3.org"));
 
+// (3) The same case as (2), missed by it and caught by running the PUBLISHED
+// tool afterwards: a DOCTYPE system identifier names a grammar and is fixed by
+// the specification. The local corpus had already gone quiet on namespaces, so
+// only the end-to-end run surfaced this one.
+const dtd = mkdtempSync(join(tmpdir(), "wsl-"));
+writeFileSync(join(dtd, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "Doctype", description: "An extension shipping a page with an svg doctype in it.", icons: { 16: "i.png" }, permissions: ["storage"] }));
+writeFileSync(join(dtd, "app.js"), 'chrome.storage.local.get("k");\n');
+writeFileSync(join(dtd, "page.html"), '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n');
+check("a DOCTYPE system identifier is not reported as an insecure endpoint",
+  !ids(lint(dtd)).includes("insecure-transmission"));
+
+// THE CONTROL for the narrowness of that exclusion: w3.org is not blanket
+// allowed. A plain-http link to a w3.org document is still a plain-http link.
+const w3doc = mkdtempSync(join(tmpdir(), "wsl-"));
+writeFileSync(join(w3doc, "manifest.json"), JSON.stringify({ manifest_version: 3, name: "Linker", description: "An extension that links out to a specification document.", icons: { 16: "i.png" }, permissions: ["storage"] }));
+writeFileSync(join(w3doc, "app.js"), 'chrome.storage.local.get("k");\nconst spec = "http://www.w3.org/TR/webstorage/";\n');
+check("CONTROL: a plain-http w3.org document link is still reported",
+  ids(lint(w3doc)).includes("insecure-transmission"));
+
 // node_modules must not be scanned: a finding in a dependency is noise the
 // developer cannot act on, and it is the fastest way to get a linter muted.
 const withDeps = mkdtempSync(join(tmpdir(), "wsl-"));

@@ -344,7 +344,20 @@ export const RULES = [
         (f) => isCode(f) || isMarkup(f),
       ).filter((h) => {
         const url = String(h.match || "").replace(/^["'`]/, "");
-        return !XML_NAMESPACES.some((ns) => url.startsWith(ns));
+        if (XML_NAMESPACES.some((ns) => url.startsWith(ns))) return false;
+        // DOCTYPE system identifiers are the same case as namespaces and were
+        // missed by the first pass: `<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//
+        // EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">` names a
+        // grammar, is fixed by the specification, and is not a channel anything
+        // travels over. Found still firing on listen1 by running the PUBLISHED
+        // tool after shipping the namespace fix, which is the only reason it was
+        // caught - the local corpus had already gone quiet.
+        //
+        // Deliberately narrow: a `.dtd` under w3.org, not all of w3.org/TR,
+        // which is where specification *documents* live. A plain-http link to a
+        // document is still a plain-http link and stays reported.
+        if (/^https?:\/\/(www\.)?w3\.org\/[^"'`\s]*\.dtd$/i.test(url)) return false;
+        return true;
       });
       if (!hits.length) return [];
       return [finding({
