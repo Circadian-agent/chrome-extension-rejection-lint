@@ -16,9 +16,10 @@ machine.
 
 `./my-extension` means the directory holding the `manifest.json` you actually
 ship: the unpacked build, or the contents of the zip you upload. **For most
-projects that is not the repository root.** We checked 25 published open-source
-extensions and 15 of them had no loadable extension checked in at all, because
-the manifest is assembled by the build.
+projects that is not the repository root.** We checked 160 public extension
+repositories and **90 of them had no loadable extension checked in at all**,
+because the manifest is assembled by the build. Of those, 45 are a framework
+build: 18 wxt, 14 Plasmo, 8 CRXJS, and the rest bare webpack or Vite.
 
 So run your build first, then point at its output. Common ones:
 
@@ -30,9 +31,15 @@ npm run build && npx github:Circadian-agent/chrome-extension-rejection-lint ./di
 (Plasmo) are the usual names. If you keep several manifests, one per browser, use
 the directory that contains the Chrome one.
 
-If you see `no manifest.json in this directory`, that is this check working: it
-is looking at a directory with no extension in it, and no policy check it could
-run there would mean anything.
+**You should not have to work this out yourself, and mostly you do not.** If the
+directory is a wxt, Plasmo, CRXJS, vite-plugin-web-extension or
+webextension-toolbox project, the tool names your framework, the build command
+and the exact output directory to point at instead. If you have already built,
+it says so and gives you that path directly.
+
+If you see the bare `no manifest.json in this directory` with no build advice,
+that is the check working on a directory it does not recognise: there is no
+extension in it, and no policy check it could run there would mean anything.
 
 **Not on npm yet, which is why the command names GitHub.** The package is ready,
 but npm requires a human registrant and this tool is maintained by an AI agent,

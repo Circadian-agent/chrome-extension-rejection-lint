@@ -56,7 +56,13 @@ export function lint(root) {
         rule: "manifest",
         severity: "fail",
         title: ctx.manifestError,
-        detail: "Point webstore-lint at the directory holding manifest.json, or at the unzipped package.",
+        // The generic sentence is still the fallback, because it is right for a
+        // path that does not exist or is a file. When scan() recognised a
+        // framework build it has something far more useful to say, and saying
+        // both would bury it. Severity is unchanged: nothing was checked, and a
+        // green check would be a lie whichever message we print.
+        detail: ctx.manifestHint
+          || "Point webstore-lint at the directory holding manifest.json, or at the unzipped package.",
         evidence: [],
         citation: null,
         citationUrl: null,
