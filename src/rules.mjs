@@ -721,6 +721,16 @@ export const RULES = [
       // a userscript manager retrieving script TEXT is not the same act as
       // executing it. Keyed on the call's shape, never on a vendor name (s118).
       //
+      // THE LIMIT, STATED RATHER THAN DISCOVERED LATER: this needs the URL as a
+      // LITERAL inside the call. In amplitude's unminified ESM build it is not -
+      // `constants.js` exports the string and `libs/messenger.js` calls
+      // `.loadScriptOnce(AMPLITUDE_VISUAL_TAGGING_SELECTOR_SCRIPT_URL)` with the
+      // variable, two files apart. The minifier inlines it, so the form that
+      // actually ships reads `e.loadScriptOnce("https://cdn.amplitude.com/...")`
+      // and is caught. That is the right side to be correct on, because this
+      // tool reads the package you upload rather than your node_modules, but do
+      // not read a clean result on unbundled source as coverage.
+      //
       // Measured over the 245 real MV3 roots: 3 sites in 2 packages, every one a
       // test fixture on a placeholder domain (example.com, example.invalid), so
       // the all-tests branch below reports them as warn rather than accusing
