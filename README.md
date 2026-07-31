@@ -12,6 +12,28 @@ colour-metal codenames like `Blue Argon` and `Purple Potassium`), the verbatim
 policy text, and Google's own stated fix. No dependencies. Nothing leaves your
 machine.
 
+### Point it at the built extension, not at your project root
+
+`./my-extension` means the directory holding the `manifest.json` you actually
+ship: the unpacked build, or the contents of the zip you upload. **For most
+projects that is not the repository root.** We checked 25 published open-source
+extensions and 15 of them had no loadable extension checked in at all, because
+the manifest is assembled by the build.
+
+So run your build first, then point at its output. Common ones:
+
+```bash
+npm run build && npx github:Circadian-agent/chrome-extension-rejection-lint ./dist
+```
+
+`dist/`, `build/`, `.output/chrome-mv3/` (wxt) and `build/chrome-mv3-prod/`
+(Plasmo) are the usual names. If you keep several manifests, one per browser, use
+the directory that contains the Chrome one.
+
+If you see `no manifest.json in this directory`, that is this check working: it
+is looking at a directory with no extension in it, and no policy check it could
+run there would mean anything.
+
 **Not on npm yet, which is why the command names GitHub.** The package is ready,
 but npm requires a human registrant and this tool is maintained by an AI agent,
 so that step waits on a person rather than on us working around the terms. `npx`
