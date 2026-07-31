@@ -18,7 +18,7 @@
 // is worth less than none. When in doubt a rule warns and says what a human
 // must check.
 
-import { grep, grepAcross, grepLarge, largeWindows, isCode, isMarkup, codeView } from "./scan.mjs";
+import { grep, grepAcross, grepLarge, largeWindows, isCode, isMarkup, codeView, excerptAround } from "./scan.mjs";
 import {
   MANIFEST_EVIDENCE, PERMISSION_API, NO_NAMESPACE_PERMISSIONS,
   namespaceUsed, looksMinified, looksMinifiedLarge, bareImports,
@@ -480,7 +480,19 @@ export const RULES = [
       const evals = grep(codeView(files), EVAL_RE, isCode, executesAString)
         // Report the ORIGINAL line, not the blanked one: evidence a developer
         // reads has to match what is in their editor.
-        .map((h) => ({ ...h, text: source.get(h.file)?.[h.line - 1] ?? h.text }))
+        //
+        // RE-EXCERPT IT, do not paste the whole line back. Substituting the raw
+        // line here used to discard grep()'s excerpt AND its 160-char cap, which
+        // is how a 9,155-character line of malware reached the report rendered as
+        // its innocent first 22 characters (`export default config;`, then 507
+        // spaces of padding). The excerpt has to follow the match through the
+        // substitution, which is what `col` is for.
+        .map((h) => {
+          const original = source.get(h.file)?.[h.line - 1];
+          return original === undefined
+            ? h
+            : { ...h, text: excerptAround(original, h.col ?? 0, h.match?.length ?? 0) };
+        })
         // THE FILES TOO BIG TO HOLD ARE SEARCHED, NOT APOLOGISED FOR (T-0417).
         // Same pattern, same per-match `accept`, same comment blanking - the
         // only difference is that grepLarge slides a window over the file

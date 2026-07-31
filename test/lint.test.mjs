@@ -12,7 +12,7 @@
 // whose pass condition is also satisfied by the failure.
 
 import { lint, auditPermissions } from "../src/lint.mjs";
-import { stripComments, stripCommentsChunk, initialCommentState } from "../src/scan.mjs";
+import { stripComments, stripCommentsChunk, initialCommentState, excerptAround, grep } from "../src/scan.mjs";
 import { PERMISSION_API, NO_NAMESPACE_PERMISSIONS } from "../src/audit.mjs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1533,6 +1533,41 @@ check("cli: a supplied url is not linted as a directory",
     !!mkdir({ "app.js": 'import {\n  debounce,\n} from "debounce-fn";' }));
   check("unbuilt-source: a side-effect import is caught",
     !!mkdir({ "app.js": 'import "webext-base-css";' }));
+}
+
+
+// --------------------------------------------------------------------------
+// EVIDENCE MUST CONTAIN THE MATCH. Found on a real corpus repo (s106): a
+// malicious postcss.config.mjs ends with the legitimate `export default
+// config;`, then 507 spaces, then an 8.6 KB loader that resolves a C2 host from
+// an Ethereum transaction and evals what it downloads. remote-code fired at FAIL
+// and the evidence we printed was "export default config;" - innocent code, so
+// the most serious finding the tool can produce read as an obvious false alarm.
+{
+  const padded = "export default config;" + " ".repeat(507) + 'const x=1;eval(fetched+payload);';
+  const idx = padded.indexOf("eval(");
+  const ev = excerptAround(padded, idx, "eval(".length);
+  check("evidence follows a match hidden behind padding", ev.includes("eval("), ev);
+  check("and it is marked as an excerpt rather than pretending to be the line start",
+    ev.startsWith("..."), ev);
+  check("CONTROL: the innocent prefix alone is NOT what gets reported",
+    ev.trim() !== "export default config;", ev);
+
+  // The control that makes the change safe: ordinary lines must be untouched,
+  // or this silently rewrites the evidence on every other finding in the tool.
+  const normal = "  const s = eval(userInput);";
+  check("CONTROL: an ordinary line is byte-identical to the old first-160 rule",
+    excerptAround(normal, normal.indexOf("eval("), 5) === normal.trim().slice(0, 160),
+    excerptAround(normal, normal.indexOf("eval("), 5));
+  const longButEarly = "  const s = eval(x); // " + "y".repeat(400);
+  check("CONTROL: a long line whose match is early still reports from the start",
+    excerptAround(longButEarly, longButEarly.indexOf("eval("), 5) === longButEarly.trim().slice(0, 160));
+
+  // End to end through grep(), because excerptAround being right is not evidence
+  // that the scanner actually calls it.
+  const hits = grep([{ path: "postcss.config.mjs", lines: [padded] }], /eval\s*\(/);
+  check("grep() itself reports evidence containing the match",
+    hits.length === 1 && hits[0].text.includes("eval("), JSON.stringify(hits[0] && hits[0].text));
 }
 
 console.log(`\nwebstore-lint: ${pass} passed, ${fail} failed`);

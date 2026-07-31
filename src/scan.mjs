@@ -213,10 +213,49 @@ export function resolveI18n(manifest, files, skipped = []) {
 // Rejecting a site can therefore only ever reveal another site or leave the line
 // unreported - never mask one. Filtering afterwards would have dropped both
 // screenity files entirely and called that an improvement.
+// THE EVIDENCE MUST CONTAIN THE MATCH, and until s106 nothing required it to.
+// `text` was the first 160 characters of the line, which is correct for ordinary
+// code and actively misleading for the one case that matters most.
+//
+// Found on a real repo in the corpus (s106). A malicious `postcss.config.mjs`
+// ended with the legitimate line `export default config;`, then **507 spaces**,
+// then 8.6 KB of obfuscated loader that resolves a C2 address out of an Ethereum
+// transaction and `eval`s what it downloads. The rule fired correctly at FAIL.
+// The evidence we printed for it was:
+//
+//     postcss.config.mjs:9   export default config;
+//
+// - innocent code and whitespace, because the payload starts 529 characters in.
+// A developer reading that dismisses the most serious finding this tool can
+// produce as an obvious false positive. Padding to push code off the right edge
+// is a deliberate hiding technique, so the excerpt has to follow the match.
+//
+// Ordinary lines are byte-identical to before: when the match already falls
+// inside the first EXCERPT characters this returns exactly what it used to, so
+// the change cannot quietly rewrite the evidence on every other finding.
+const EXCERPT = 160;
+export function excerptAround(line, index = 0, matchLen = 0) {
+  const lead = line.length - line.trimStart().length;
+  const trimmed = line.trim();
+  const at = Math.max(0, index - lead);
+  if (at + matchLen <= EXCERPT) return trimmed.slice(0, EXCERPT);
+  // Keep a little context before the match so the reader can see what it sits in.
+  const start = Math.max(0, at - 40);
+  return "..." + trimmed.slice(start, start + EXCERPT - 3);
+}
+
 export function grep(files, re, filter = () => true, accept = null) {
   const hits = [];
   const push = (f, i, m) =>
-    hits.push({ file: f.path, line: i + 1, match: m[0].slice(0, 120), text: f.lines[i].trim().slice(0, 160) });
+    hits.push({
+      file: f.path, line: i + 1, match: m[0].slice(0, 120),
+      // `col` is carried so a caller that substitutes a DIFFERENT rendering of
+      // the same line (rules.mjs swaps the comment-blanked line for the original
+      // one) can re-excerpt around the same site instead of falling back to the
+      // first 160 characters. Without it that substitution silently undid this.
+      col: m.index,
+      text: excerptAround(f.lines[i], m.index, m[0].length),
+    });
   for (const f of files) {
     if (!filter(f)) continue;
     for (let i = 0; i < f.lines.length; i++) {
@@ -261,12 +300,17 @@ export function grepAcross(files, re, filter = () => true) {
     while ((m = rx.exec(f.text)) !== null) {
       // Count the newlines before the match rather than searching the lines
       // array, so a match that spans lines is attributed to the line it opens on.
-      const line = f.text.slice(0, m.index).split("\n").length;
+      const before = f.text.slice(0, m.index);
+      const line = before.split("\n").length;
+      // Offset of the match WITHIN its opening line, so the excerpt can follow a
+      // match that sits far to the right of a padded line - same reason as grep().
+      const col = m.index - (before.lastIndexOf("\n") + 1);
       hits.push({
         file: f.path,
         line,
         match: m[0].replace(/\s+/g, " ").slice(0, 120),
-        text: (f.lines[line - 1] || "").trim().slice(0, 160),
+        col,
+        text: excerptAround(f.lines[line - 1] || "", col, m[0].length),
       });
       // A zero-length match would spin forever.
       if (m.index === rx.lastIndex) rx.lastIndex++;
