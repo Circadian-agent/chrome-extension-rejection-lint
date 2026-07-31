@@ -1389,14 +1389,33 @@ check("cli: a supplied url is not linted as a directory",
     !mk({ "app.js": 'globalThis.chrome?.storage?.local.get("k");' }),
     "reported unused despite chrome?.storage");
 
-  // 2. A file we never opened cannot support the word "never". 2 MB is the limit,
-  //    so this file is deliberately over it and the permission is used INSIDE it -
-  //    exactly the shape that produced the false fail.
+  // 2. A file over the 2 MB limit is now STREAMED rather than left unread, so a
+  //    permission used inside one is simply used. This fixture used to produce
+  //    the "we did not read everything" warning; the tool now reads it.
   const big = mk({ "huge.js": `/*${"x".repeat(2 * 1024 * 1024)}*/\nchrome.storage.local.get("k");` });
-  check("unused-permissions: an unread oversized file demotes fail to warn",
-    big?.severity === "warn", big ? `${big.severity}: ${big.title}` : "no finding at all");
-  check("unused-permissions: ...and says the code was not read",
-    /were not read/.test(big?.detail || ""), big?.detail?.slice(0, 120));
+  check("unused-permissions: a permission used inside an oversized file counts as used",
+    !big, big ? `${big.severity}: ${big.title}` : "");
+
+  // 2b. THE ASYMMETRY, AND THE MOST IMPORTANT ASSERTION IN THIS BLOCK. Having
+  //     READ a bundle is not having SEEN the name in it: a minifier rewrites
+  //     chrome into a one-letter local. So an oversized file that is minified
+  //     must keep the finding at WARN even though every byte of it was read.
+  //     Measured on the 82 cached release packages, dropping this would have
+  //     turned 17 permissions in 7 packages into "declared but never used",
+  //     among them contextMenus and idle on Bitwarden, which uses both.
+  const bigMin = mk({ "huge.js": `var pad="${"x".repeat(2 * 1024 * 1024)}";var a=1;` });
+  check("unused-permissions: an oversized MINIFIED file keeps the finding at warn",
+    bigMin?.severity === "warn", bigMin ? `${bigMin.severity}: ${bigMin.title}` : "no finding at all");
+  check("unused-permissions: ...and says why - a minifier renames the namespace",
+    /minif|bundled/i.test(bigMin?.detail || ""), bigMin?.detail?.slice(0, 140));
+
+  // 2c. CONTROL PAIR: the demotion above must come from the SHAPE of the file and
+  //     not from its size, or every large package is permanently un-failable and
+  //     the rule quietly stops working on exactly the packages that ship. Same
+  //     size, same absence of the permission, ordinary line lengths.
+  const bigPlain = mk({ "huge.js": `${"var a=1;\n".repeat(240000)}` });
+  check("unused-permissions: CONTROL, an oversized file with ordinary lines does not demote",
+    bigPlain?.severity === "fail", bigPlain ? `${bigPlain.severity}: ${bigPlain.title}` : "no finding at all");
 
   // 3. Minified but fully read: still cannot tell renamed from absent.
   const min = mk({ "b.js": `${"a".repeat(2500)}=1;` });

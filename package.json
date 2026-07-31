@@ -1,6 +1,6 @@
 {
   "name": "webstore-lint",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "description": "Check an unpacked Chrome extension against the Chrome Web Store program policies before you submit it. Every finding cites Google's own notification ID and verbatim policy text. Covers the 1 August 2026 policy updates.",
   "keywords": [
     "chrome-extension",

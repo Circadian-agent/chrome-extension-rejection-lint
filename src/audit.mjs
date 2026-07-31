@@ -27,7 +27,7 @@
 //      bundled code defeats call-site analysis, and when that is detected the
 //      pass says so rather than reporting a confident zero.
 
-import { isCode, codeView } from "./scan.mjs";
+import { isCode, codeView, largeWindows, grepLarge } from "./scan.mjs";
 
 // Permission -> the namespaces whose presence proves it is used. rules.mjs keeps
 // its own copy because it needs only a boolean while this pass needs the call
@@ -227,17 +227,73 @@ function callSites(files, needles) {
 // bundle is not an absence in the source. Detected and declared, never assumed
 // away - an audit that reports a confident zero over a bundle is the same class
 // of error as a health check that passes on failure.
+// THE THRESHOLD LIVES HERE ONCE. Two callers now ask "is this minified" - the
+// files held in memory and the ones read through a window - and a copy of these
+// numbers in the second one would be a copy that drifts. It matters more than it
+// looks: this predicate is the only thing standing between a bundle and a FAIL
+// telling someone to delete a permission their extension uses.
+const isMinifiedShape = (longest, avg, total) => longest > 2000 || (avg > 300 && total > 20000);
+
 export function looksMinified(files) {
   const suspect = [];
   for (const f of files) {
     if (!isCode(f)) continue;
     const longest = f.lines.reduce((m, l) => Math.max(m, l.length), 0);
     const avg = f.text.length / Math.max(1, f.lines.length);
-    if (longest > 2000 || (avg > 300 && f.text.length > 20000)) {
+    if (isMinifiedShape(longest, avg, f.text.length)) {
       suspect.push({ file: f.path, longestLine: longest, avgLineLength: Math.round(avg) });
     }
   }
   return suspect;
+}
+
+// The same question about a file too big to hold, measured while streaming it
+// rather than from a lines array that is never built.
+//
+// WHY IT IS NEEDED AT ALL, and it is the whole safety argument for reading these
+// files: streaming lets the tool CONFIRM a permission is used, which only ever
+// removes a finding. Removing the "we did not read everything" caveat is the
+// other direction, and it turns a warning into a FAIL. Measured over the 82
+// cached release packages: 17 permissions in 7 packages would have flipped to
+// "declared but never used" - including contextMenus and idle on Bitwarden,
+// which plainly uses both - and EVERY ONE of them is held back by this check,
+// because every oversized file in those packages is a bundle with a line between
+// 170,000 and 1,056,768 characters long. A minifier rewrites `chrome` to a
+// one-letter local, so having READ the bytes is still not having seen the name.
+export function looksMinifiedLarge(oversized) {
+  const suspect = [];
+  for (const f of oversized || []) {
+    if (!isCode(f)) continue;
+    let longest = 0, cur = 0, total = 0, newlines = 0, seen = 0;
+    for (const w of largeWindows(f)) {
+      // Each window overlaps the last, so only count what is new in it.
+      const fresh = w.raw.slice(seen);
+      seen = w.raw.length;
+      for (let i = 0; i < fresh.length; i++) {
+        total++;
+        if (fresh.charCodeAt(i) === 10) { newlines++; if (cur > longest) longest = cur; cur = 0; }
+        else cur++;
+      }
+    }
+    if (cur > longest) longest = cur;
+    const avg = total / Math.max(1, newlines + 1);
+    if (isMinifiedShape(longest, avg, total)) {
+      suspect.push({ file: f.path, longestLine: longest, avgLineLength: Math.round(avg) });
+    }
+  }
+  return suspect;
+}
+
+// Call sites in the files too big to hold. Same literal needles as callSites
+// above, so the two cannot disagree about what counts as a site; the evidence is
+// a snippet rather than a whole line because on a bundle "the line" is the file.
+export function largeCallSites(oversized, needles) {
+  if (!needles?.length) return [];
+  const esc = (n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(needles.map(esc).join("|"));
+  return grepLarge(oversized, re, { filter: isCode, code: true })
+    .filter((h) => h.match)
+    .map((h) => ({ file: h.file, line: h.line, api: h.match, text: h.text }));
 }
 
 // Does anything here need tabs beyond the one the user just acted on? Asked over
@@ -385,7 +441,7 @@ function narrowings({ manifest, files, used }) {
 
 // --- the audit ---------------------------------------------------------------
 
-export function audit({ manifest, files, skipped }) {
+export function audit({ manifest, files, skipped, oversized = [] }) {
   if (!manifest) return null;
 
   const declared = [
@@ -397,6 +453,7 @@ export function audit({ manifest, files, skipped }) {
   // detection below deliberately uses the RAW files, because how the shipped
   // bytes are laid out is the thing it is measuring.
   const code = codeView(files);
+  const largeCode = (oversized || []).filter(isCode);
 
   const used = {};
   const ledger = [];
@@ -408,7 +465,10 @@ export function audit({ manifest, files, skipped }) {
         note: "This pass carries no API pattern for this permission, so it says nothing rather than guessing. Absence here is not evidence of disuse." });
       continue;
     }
-    const sites = apis.length ? callSites(code, apis) : [];
+    // The oversized files are searched here too, so the ledger and the
+    // unused-permissions rule cannot answer the same question differently -
+    // which they would have, the moment the rule started reading them.
+    const sites = apis.length ? [...callSites(code, apis), ...largeCallSites(largeCode, apis)] : [];
     used[name] = sites;
     if (name === "activeTab") {
       ledger.push({ permission: name, where, status: "used", sites: [],
@@ -442,7 +502,7 @@ export function audit({ manifest, files, skipped }) {
     });
   }
 
-  const minified = looksMinified(files);
+  const minified = [...looksMinified(files), ...looksMinifiedLarge(largeCode)];
 
   return {
     manifestVersion: manifest.manifest_version,

@@ -468,24 +468,68 @@ const OVERLAP = 8192;
 // newlines actually passed over, and the evidence is a SNIPPET around the match
 // rather than the line - which is what grep() would have produced anyway once it
 // truncated a 460 KB line to 160 characters.
+// The windowing itself, separated from what any one caller does with it, for the
+// same reason stripComments has exactly one implementation: two rules now read
+// these files and a second copy of the slide-and-overlap arithmetic is a bug
+// waiting to be fixed in one place only.
+//
+// Yields { raw, view, base, lineBase } per window. `raw` is the original text,
+// `view` is the same span with comments blanked when `code` is true, and the two
+// are always the same length - stripComments preserves offsets, which is what
+// lets a match found in `view` be quoted from `raw` and counted in lines.
+export function* largeWindows(f, { code = false } = {}) {
+  let fd;
+  try { fd = openSync(f.abs, "r"); } catch { return; }
+  const decoder = new StringDecoder("utf8");
+  const buf = Buffer.allocUnsafe(WINDOW);
+  let raw = "";        // window of original text
+  let view = "";       // same window, comments blanked when code is true
+  let base = 0;        // absolute offset of raw[0]
+  let lineBase = 1;    // 1-indexed line number of raw[0]
+  let heldRaw = "";    // characters stripCommentsChunk could not decide yet
+  let state = initialCommentState();
+  try {
+    for (;;) {
+      const n = readSync(fd, buf, 0, WINDOW, null);
+      const atEof = n === 0;
+      const chunk = heldRaw + (atEof ? decoder.end() : decoder.write(buf.subarray(0, n)));
+      let add = chunk;
+      if (code) {
+        const r = stripCommentsChunk(chunk, state, { atEof });
+        state = r.state;
+        heldRaw = r.held;
+        add = r.out;
+        raw += chunk.slice(0, r.out.length);
+      } else {
+        heldRaw = "";
+        raw += chunk;
+      }
+      view += add;
+      yield { raw, view, base, lineBase };
+      if (atEof) break;
+      // Slide, keeping the overlap. Everything dropped is accounted for in base
+      // and lineBase so absolute offsets and line numbers keep counting.
+      if (view.length > OVERLAP) {
+        const drop = view.length - OVERLAP;
+        lineBase += countNewlines(raw, 0, drop);
+        base += drop;
+        view = view.slice(drop);
+        raw = raw.slice(drop);
+      }
+    }
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export function grepLarge(oversized, re, { filter = () => true, code = false, accept = null, maxPerFile = 25 } = {}) {
   const hits = [];
   for (const f of oversized || []) {
     if (!filter(f)) continue;
-    let fd;
-    try { fd = openSync(f.abs, "r"); } catch { continue; }
-    const decoder = new StringDecoder("utf8");
-    const buf = Buffer.allocUnsafe(WINDOW);
-    let raw = "";        // window of original text
-    let view = "";       // same window, comments blanked when code is true
-    let base = 0;        // absolute offset of raw[0]
-    let lineBase = 1;    // 1-indexed line number of raw[0]
-    let heldRaw = "";    // characters stripCommentsChunk could not decide yet
-    let state = initialCommentState();
     const emitted = new Set();
     let truncated = false;
 
-    const search = () => {
+    const search = ({ raw, view, base, lineBase }) => {
       const rx = new RegExp(re.source, re.flags.includes("g") ? re.flags : re.flags + "g");
       let m;
       while ((m = rx.exec(view)) !== null) {
@@ -509,37 +553,9 @@ export function grepLarge(oversized, re, { filter = () => true, code = false, ac
       }
     };
 
-    try {
-      for (;;) {
-        const n = readSync(fd, buf, 0, WINDOW, null);
-        const atEof = n === 0;
-        const chunk = heldRaw + (atEof ? decoder.end() : decoder.write(buf.subarray(0, n)));
-        let add = chunk;
-        if (code) {
-          const r = stripCommentsChunk(chunk, state, { atEof });
-          state = r.state;
-          heldRaw = r.held;
-          add = r.out;
-          raw += chunk.slice(0, r.out.length);
-        } else {
-          heldRaw = "";
-          raw += chunk;
-        }
-        view += add;
-        search();
-        if (truncated || atEof) break;
-        // Slide, keeping the overlap. Everything dropped is accounted for in
-        // base and lineBase so absolute offsets and line numbers keep counting.
-        if (view.length > OVERLAP) {
-          const drop = view.length - OVERLAP;
-          lineBase += countNewlines(raw, 0, drop);
-          base += drop;
-          view = view.slice(drop);
-          raw = raw.slice(drop);
-        }
-      }
-    } finally {
-      closeSync(fd);
+    for (const w of largeWindows(f, { code })) {
+      search(w);
+      if (truncated) break;
     }
 
     if (truncated) {

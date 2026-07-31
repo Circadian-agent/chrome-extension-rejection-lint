@@ -18,8 +18,8 @@
 // is worth less than none. When in doubt a rule warns and says what a human
 // must check.
 
-import { grep, grepAcross, grepLarge, isCode, isMarkup, codeView } from "./scan.mjs";
-import { MANIFEST_EVIDENCE, namespaceUsed, looksMinified, bareImports } from "./audit.mjs";
+import { grep, grepAcross, grepLarge, largeWindows, isCode, isMarkup, codeView } from "./scan.mjs";
+import { MANIFEST_EVIDENCE, namespaceUsed, looksMinified, looksMinifiedLarge, bareImports } from "./audit.mjs";
 
 // Permissions whose presence means USER data is in play. Used by the disclosure
 // and privacy-policy rules. Kept explicit rather than inferred: a list you can
@@ -596,7 +596,7 @@ export const RULES = [
   {
     id: "unused-permissions",
     category: "excessive-permissions",
-    run({ manifest, files, skipped = [] }) {
+    run({ manifest, files, skipped = [], oversized = [] }) {
       if (!manifest) return [];
       const declared = [...(manifest.permissions || []), ...(manifest.optional_permissions || [])];
       // Comments blanked first. A permission whose only trace is "// we used to
@@ -606,7 +606,7 @@ export const RULES = [
       // audit.mjs reported it. Shared with audit.mjs so the two cannot disagree.
       const view = codeView(files).filter(isCode);
       const code = view.map((f) => f.text).join("\n");
-      const unused = declared.filter((p) => {
+      let unused = declared.filter((p) => {
         const apis = PERMISSION_API[p];
         if (!apis) return false; // unknown permission: say nothing rather than guess
         // Not a literal `chrome.storage` test: a minifier aliases the namespace
@@ -617,6 +617,18 @@ export const RULES = [
         // is a FAIL, so a false one here deletes a working feature.
         return !MANIFEST_EVIDENCE[p]?.(manifest);
       });
+      // THE FILES TOO BIG TO HOLD ARE READ HERE TOO, and note which direction
+      // that runs in. Finding a namespace in one can only ever REMOVE a
+      // permission from this list - it is evidence of use, and use is the
+      // fail-safe answer for this rule. Nothing below can add one.
+      const largeCode = (oversized || []).filter(isCode);
+      for (const f of largeCode) {
+        if (!unused.length) break;
+        for (const w of largeWindows(f, { code: true })) {
+          unused = unused.filter((p) => !namespaceUsed(w.view, PERMISSION_API[p]));
+          if (!unused.length) break;
+        }
+      }
       if (!unused.length) return [];
       // "NEVER USED" IS A CLAIM ABOUT ALL THE CODE, so it may only be made when
       // all the code was read and read in a form where a name survives. Two
@@ -639,8 +651,20 @@ export const RULES = [
       // source, not a defect we claim to have found. Silence would be wrong too:
       // a permission left behind by a deleted feature is still the commonest
       // true positive, and it looks exactly like this.
-      const unread = skipped.filter((s) => /\.(js|mjs|cjs|ts|jsx|tsx|html?)$/i.test(s.path || ""));
-      const minified = looksMinified(view);
+      // Subtract exactly what was streamed and no more. The remaining entries
+      // are oversized HTML and genuinely unreadable files, which really were not
+      // read.
+      const streamed = new Set(largeCode.map((o) => o.path));
+      const unread = skipped.filter((s) =>
+        /\.(js|mjs|cjs|ts|jsx|tsx|html?)$/i.test(s.path || "") && !streamed.has(s.path));
+      // AND THE ONES WE DID READ STILL COUNT TOWARD (2), which is the half that
+      // matters. Having read the bytes of a bundle is not having seen the name:
+      // over the 82 cached release packages, dropping the unread caveat without
+      // this would have turned 17 permissions in 7 packages into "declared but
+      // never used", among them contextMenus and idle on Bitwarden, which uses
+      // both. Every one is held here, because every oversized file in those
+      // packages runs to between 170,000 and 1,056,768 characters on one line.
+      const minified = [...looksMinified(view), ...looksMinifiedLarge(largeCode)];
       const bare = bareImports(view);
       // A DECLARED FILE THAT IS NOT HERE IS THE STRONGEST OF THESE FOUR, and it
       // was the one missing. The other three all describe code we read but could
