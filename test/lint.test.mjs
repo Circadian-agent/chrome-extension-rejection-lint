@@ -12,6 +12,7 @@
 // whose pass condition is also satisfied by the failure.
 
 import { lint, auditPermissions } from "../src/lint.mjs";
+import { stripComments, stripCommentsChunk, initialCommentState } from "../src/scan.mjs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
@@ -221,19 +222,52 @@ const bigUnread = mkExt("Bundled", "An extension whose service worker is a singl
   // Over the 2 MB limit, and carrying a real violation the scan will never see.
   "background.js": `var pad="${"x".repeat(2 * 1024 * 1024)}";\nvar f=new Function('return ('+source+');')();\n`,
 });
+// v1.0.11 made the rule SAY it could not read the file. T-0417 makes it read
+// it: grepLarge slides a window over the file instead of holding it, so the
+// site below is reported at the same severity it would carry in a 4 KB file.
 {
   const r = lint(bigUnread);
-  const warn = r.findings.find((f) => f.rule === "remote-code" && f.severity === "warn" && /too large/i.test(f.title));
-  // Assert on the DISCLOSURE, not on the absence of a fail: "no fail" is also
-  // what a crashed rule produces, and it is what the bug produced.
-  check("a code file too large to read is disclosed by the remote-code rule", Boolean(warn),
-    JSON.stringify(r.findings.filter((f) => f.rule === "remote-code").map((f) => f.severity + ":" + f.title)));
-  check("and the disclosure names the file it could not read",
-    warn?.evidence?.some((e) => e.file === "background.js"), JSON.stringify(warn?.evidence));
-  // The rule genuinely cannot see it - which is the point of saying so.
-  check("CONTROL: the violation inside the unread file is indeed not reported",
-    !r.findings.some((f) => f.rule === "remote-code" && f.severity === "fail"));
+  const rc = r.findings.filter((f) => f.rule === "remote-code");
+  const failed = rc.find((f) => f.severity === "fail" && /eval|Function/.test(f.title));
+  // Assert on the SITE, not on "a fail exists": a fail with the wrong file and
+  // line is what a broken offset would produce, and it reads identically.
+  check("a violation past the 2 MB read limit is reported at fail", Boolean(failed),
+    JSON.stringify(rc.map((f) => f.severity + ":" + f.title)));
+  const site = failed?.evidence?.find((e) => e.file === "background.js");
+  check("...naming the oversized file it was found in", Boolean(site),
+    JSON.stringify(failed?.evidence));
+  // The padding is one line, so the site is on line 2 of the file. Only a
+  // correct newline count across the sliding window produces that number.
+  check("...at the right line, counted across the window boundary", site?.line === 2, `line ${site?.line}`);
+  check("...quoting the call as evidence", /new Function/.test(site?.text || ""), site?.text);
+  // The honesty warning must now be GONE for this file. Saying "could not check"
+  // about a file it did check sends a developer hunting by hand for a site the
+  // tool already found.
+  check("...and the file is no longer listed as unchecked",
+    !rc.some((f) => f.severity === "warn" && /too large/i.test(f.title)),
+    JSON.stringify(rc.map((f) => f.severity + ":" + f.title)));
 }
+
+// CONTROL: the streaming pass must not invent findings. Same oversized file,
+// same size, no violation in it - and no fail. Without this the test above is
+// satisfied by a rule that fails on every large file.
+const bigClean = mkExt("BundledClean", "An extension whose service worker is a single large bundle with no eval in it.", {
+  "app.js": 'chrome.storage.local.get("k");\n',
+  "background.js": `var pad="${"x".repeat(2 * 1024 * 1024)}";\nvar f=JSON.parse(source);\n`,
+});
+check("CONTROL: an oversized file with no violation produces no remote-code fail",
+  !lint(bigClean).findings.some((f) => f.rule === "remote-code" && f.severity === "fail"),
+  JSON.stringify(lint(bigClean).findings.filter((f) => f.rule === "remote-code").map((f) => f.severity + ":" + f.title)));
+
+// CONTROL: comments are blanked in the streaming pass exactly as in the whole-file
+// one. Fannon/search-bookmarks was failed on a comment saying the code does NOT
+// use eval; that must not come back just because the file is large.
+const bigComment = mkExt("BundledComment", "An extension whose large bundle mentions eval only in a comment.", {
+  "app.js": 'chrome.storage.local.get("k");\n',
+  "background.js": `var pad="${"x".repeat(2 * 1024 * 1024)}";\n// a CSP-safe validator that does not require eval() or Function()\n`,
+});
+check("CONTROL: a comment inside an oversized file is not a violation",
+  !lint(bigComment).findings.some((f) => f.rule === "remote-code" && f.severity === "fail"));
 
 // CONTROL: a package with nothing skipped must NOT carry the disclosure, or it
 // would appear on every clean report and mean nothing.
@@ -242,6 +276,54 @@ const allRead = mkExt("Small", "An extension whose files are all small enough to
 });
 check("CONTROL: a fully-read package carries no unread-file warning",
   !lint(allRead).findings.some((f) => f.rule === "remote-code"));
+
+// ---------------------------------------------------------------------------
+// (1e) THE STREAMING COMMENT STRIPPER IS THE SAME CODE AS THE WHOLE-FILE ONE,
+// and this is what holds it to that. stripComments() is a single call to the
+// chunk stepper, so the risk is not two implementations drifting - it is the
+// SEAM: a chunk boundary falling through the middle of a construct that needs
+// lookahead. One of those was real and cost six of 400 live bundles - a `*/`
+// whose asterisk was blanked in one chunk, leaving the next chunk hunting for a
+// closer that no longer existed, so the block comment swallowed the rest of the
+// file. The others are here because the same shape is available to them.
+//
+// The assertion is AGREEMENT between two runs that differ only in chunk size,
+// which is a difference that must not matter. Agreement alone is satisfied by
+// both sides doing nothing, so every case also asserts that the output really
+// is shorter in visible characters than the input - i.e. something was blanked.
+{
+  const streamed = (text, size) => {
+    let st = initialCommentState(), held = "", out = "";
+    for (let p = 0; p < text.length; p += size) {
+      const chunk = held + text.slice(p, p + size);
+      const r = stripCommentsChunk(chunk, st, { atEof: p + size >= text.length });
+      out += r.out; held = r.held; st = r.state;
+    }
+    return out + held;
+  };
+  const seam = [
+    ["a block comment closing across the seam", `var a=1;/*${"c".repeat(40)}*/var b=2;/*x*/`],
+    ["a line comment running up to the seam", `var a=1;//${"c".repeat(60)}\nvar b=2;//y`],
+    ["an escaped quote straddling the seam", `var s="${"a".repeat(38)}\\"still in the string//not a comment";/*x*/var b=2;`],
+    ["a template literal with an escaped backtick", "var s=`" + "a".repeat(38) + "\\`still in it//no`;/*x*/var b=2;"],
+    ["a regex literal containing a slash in a class", `var r=/${"a".repeat(36)}[/]x/;/*x*/var b=2;`],
+    ["a division that is not a regex", `var q=${"a".repeat(38)}/2;/*x*/var b=2;`],
+  ];
+  for (const [name, text] of seam) {
+    const whole = stripComments(text);
+    check(`stripComments blanks something in: ${name}`, whole !== text, JSON.stringify(whole));
+    check(`stripComments preserves length in: ${name}`, whole.length === text.length);
+    // EVERY chunk size from 1 up, not a chosen few. These literals are under 120
+    // characters so exhaustive is cheap, and picking sizes by hand is how the
+    // first version of this test missed a mutant entirely: the seam has to land
+    // on one specific character to expose each bug, and guessing which one is
+    // the same mistake as guessing where a bug is.
+    const bad = [];
+    for (let size = 1; size <= text.length; size++) if (streamed(text, size) !== whole) bad.push(size);
+    check(`stripComments agrees whole-file and streamed at every chunk size: ${name}`, !bad.length,
+      `disagrees at ${bad.slice(0, 8).join(",")}`);
+  }
+}
 
 // (2) XML namespace URIs are identifiers, never endpoints. The http:// spelling
 // is fixed by the spec, so this told people to change a string that would break

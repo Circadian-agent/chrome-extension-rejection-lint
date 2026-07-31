@@ -7,8 +7,9 @@
 // Skipped files are RECORDED and reported, because a silent skip is how a linter
 // says "clean" about a directory it never looked at.
 
-import { readdirSync, readFileSync, statSync, existsSync } from "node:fs";
+import { readdirSync, readFileSync, statSync, existsSync, openSync, readSync, closeSync } from "node:fs";
 import { join, relative, extname } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 // EVERY JSON FILE IN AN EXTENSION IS READ THROUGH THIS, and it exists for one
 // byte sequence. `readFileSync(f, "utf8")` keeps a leading UTF-8 BOM (U+FEFF) in
@@ -46,6 +47,11 @@ const TEXT_EXT = new Set([
 export function scan(root) {
   const files = [];
   const skipped = [];
+  // Files too big to hold in memory, kept as a work list rather than only as an
+  // apology. `skipped` stays exactly as it was, because every other rule really
+  // did not read these and its honesty warning has to keep counting them; a rule
+  // that DOES stream one subtracts it from that list itself.
+  const oversized = [];
 
   const walk = (dir) => {
     let entries;
@@ -70,6 +76,7 @@ export function scan(root) {
       try { st = statSync(full); } catch { continue; }
       if (st.size > MAX_BYTES) {
         skipped.push({ path: rel, why: `${(st.size / 1048576).toFixed(1)} MB, over the 2 MB read limit` });
+        oversized.push({ path: rel, abs: full, ext, size: st.size });
         continue;
       }
       let text;
@@ -112,7 +119,7 @@ export function scan(root) {
 
   const { manifest: localized, unresolved } = resolveI18n(manifest, files, skipped);
 
-  return { root, files, skipped, manifest: localized, manifestRaw: manifest, i18nUnresolved: unresolved, manifestError };
+  return { root, files, skipped, oversized, manifest: localized, manifestRaw: manifest, i18nUnresolved: unresolved, manifestError };
 }
 
 // Chrome's own localisation, resolved before any rule reads the manifest.
@@ -291,71 +298,267 @@ export const isMarkup = (f) => [".html", ".htm"].includes(f.ext);
 // in normal state: strings and template literals are tracked and skipped, and an
 // ambiguous slash is resolved toward "not a comment". A missed comment leaves a
 // permission reading "used", which is a miss rather than a false accusation.
-export function stripComments(text) {
-  const out = text.split("");
+// THERE IS ONE IMPLEMENTATION AND IT IS THE RESUMABLE ONE, on purpose. The
+// streaming scan (grepLarge, below) has to blank comments in a file it never
+// holds whole, and the obvious way to get that is a second copy of this state
+// machine that walks a chunk. The drift between two copies of a shared rule has
+// already been a bug in this file once (see declaredHosts in rules.mjs), and
+// this one decides whether a FAIL-severity site is visible - so instead
+// stripComments() is a single call to the chunk stepper with the whole file as
+// one chunk, and test/lint.test.mjs asserts the two paths AGREE byte for byte
+// on real bundles at several chunk sizes.
+export const initialCommentState = () => ({ mode: "code", quote: '"', cls: false, prev: "" });
+
+// Blank the comments in ONE chunk, carrying the parse state across the seam.
+//
+// `atEof` false means another chunk is coming, and then this NEVER consumes the
+// final character of the chunk: every decision here needs at most one character
+// of lookahead (`//` against `/*`, `*/` closing a block, a backslash escaping
+// the next byte), and a seam through the middle of any of those pairs decides it
+// wrong. The unconsumed tail comes back as `held` and the caller prepends it to
+// the next chunk. Holding one character uniformly is cheaper to reason about
+// than three special cases, and it is why there is no `pendingSlash` in the
+// state object.
+//
+// Returns { out, held, state }: `out` is the blanked text for the part actually
+// consumed, so out.length + held.length === text.length and every byte offset in
+// `out` is still the offset it had in the file.
+export function stripCommentsChunk(text, state = initialCommentState(), { atEof = true } = {}) {
   const n = text.length;
-  let i = 0;
-  let prev = ""; // last significant (non-space) character, for the regex/divide call
+  const out = text.split("");
+  let { mode, quote, cls, prev } = state;
+  // Nothing past `stop` is consumed, so every inner scan is bounded by it too.
+  // Bounding only the outer loop would let a backslash skip step over the held
+  // character, which is exactly the seam this is protecting.
+  const stop = atEof ? n : Math.max(0, n - 1);
   const blank = (a, b) => {
     for (let k = a; k < b && k < n; k++) if (out[k] !== "\n") out[k] = " ";
   };
 
-  while (i < n) {
+  let i = 0;
+  while (i < stop) {
+    if (mode === "line") {
+      let j = i;
+      while (j < stop && text[j] !== "\n") j++;
+      blank(i, j);
+      i = j;
+      if (j < stop) mode = "code"; // the newline itself is left for code mode
+      continue;
+    }
+    if (mode === "block") {
+      const k = text.indexOf("*/", i);
+      if (k !== -1 && k + 2 <= stop) { blank(i, k + 2); i = k + 2; mode = "code"; continue; }
+      // Not closed inside this chunk. A trailing `*` has to be HELD, not
+      // blanked: blanking it destroys the first half of a `*/` that straddles
+      // the seam, and the next chunk then searches for a closer whose asterisk
+      // no longer exists - so the block comment swallows the rest of the file.
+      // Same failure as the backslash below, and it is why holding one character
+      // is not enough on its own.
+      let end = stop;
+      if (!atEof && end > i && text[end - 1] === "*") end--;
+      blank(i, end);
+      i = end;
+      break;
+    }
+    if (mode === "str" || mode === "tpl") {
+      // A single-quoted or double-quoted string bails at a newline; a template
+      // literal does not. Both are STEPPED OVER, never blanked - see the header
+      // above and T-0416 for why blanking them is refused.
+      const ends = mode === "str" ? (ch) => ch === quote || ch === "\n" : (ch) => ch === "`";
+      let j = i;
+      // A BACKSLASH IS TWO CHARACTERS AND THE SEAM MUST NOT FALL BETWEEN THEM -
+      // handing the escaped character to the next call as an ordinary one ends
+      // the string early when it is the closing quote (`\"`, which every
+      // embedded JSON blob is full of). No guard is needed for it HERE, and that
+      // is a measured claim rather than an assumption: the skip may run j past
+      // `stop`, and consuming exactly as far as j - rather than to stop - takes
+      // the escaped character with it, which is correct. A version WITH an
+      // explicit guard was tried and proved an equivalent mutant, agreeing at
+      // every chunk size from 1 upward on the seam fixtures and byte for byte
+      // over 36 MB of real bundles. It was removed rather than kept as comfort:
+      // a branch that cannot change an answer cannot be tested, and a comment
+      // claiming it protects something would be false.
+      while (j < stop) {
+        if (text[j] === "\\") { j += 2; continue; }
+        if (ends(text[j])) break;
+        j++;
+      }
+      if (j < stop && ends(text[j])) { prev = mode === "str" ? quote : "`"; i = j + 1; mode = "code"; continue; }
+      i = j;
+      break; // holding from j: nothing after it can be decided without the next chunk
+
+    }
+    if (mode === "re") {
+      let j = i;
+      let done = false;
+      while (j < stop) {
+        const e = text[j];
+        if (e === "\\") { j += 2; continue; } // consuming to j, not to stop, carries the escape
+        if (e === "\n") break;
+        if (e === "[") cls = true;
+        else if (e === "]") cls = false;
+        else if (e === "/" && !cls) { done = true; break; }
+        j++;
+      }
+      if (done || (j < stop && text[j] === "\n")) { i = j + 1; mode = "code"; prev = "/"; continue; }
+      i = j;
+      break; // nothing after j can be decided without the next chunk
+
+    }
+
     const c = text[i];
     const d = text[i + 1];
 
-    if (c === "/" && d === "/") {
-      let j = i + 2;
-      while (j < n && text[j] !== "\n") j++;
-      blank(i, j);
-      i = j;
-      continue;
-    }
-    if (c === "/" && d === "*") {
-      let j = text.indexOf("*/", i + 2);
-      j = j === -1 ? n : j + 2;
-      blank(i, j);
-      i = j;
-      continue;
-    }
-    if (c === '"' || c === "'") {
-      let j = i + 1;
-      while (j < n && text[j] !== c && text[j] !== "\n") j += text[j] === "\\" ? 2 : 1;
-      i = j + 1;
-      prev = c;
-      continue;
-    }
-    if (c === "`") {
-      let j = i + 1;
-      while (j < n && text[j] !== "`") j += text[j] === "\\" ? 2 : 1;
-      i = j + 1;
-      prev = c;
-      continue;
-    }
+    if (c === "/" && d === "/") { blank(i, i + 2); i += 2; mode = "line"; continue; }
+    if (c === "/" && d === "*") { blank(i, i + 2); i += 2; mode = "block"; continue; }
+    if (c === '"' || c === "'") { quote = c; i++; mode = "str"; continue; }
+    if (c === "`") { i++; mode = "tpl"; continue; }
     // A slash here is either division or a regex literal. Only the regex case
     // needs skipping, and guessing wrong that way merely means a comment inside
     // the span is missed - the safe direction. An unescaped // cannot appear
     // inside a regex literal anyway, because it would have closed it.
     if (c === "/" && (prev === "" || "=(,:[!&|?{};+-*%~^<>return".includes(prev))) {
-      let j = i + 1;
-      let cls = false;
-      while (j < n && text[j] !== "\n") {
-        const e = text[j];
-        if (e === "\\") { j += 2; continue; }
-        if (e === "[") cls = true;
-        else if (e === "]") cls = false;
-        else if (e === "/" && !cls) break;
-        j++;
-      }
-      i = j + 1;
-      prev = "/";
+      i++;
+      cls = false;
+      mode = "re";
       continue;
     }
     if (!/\s/.test(c)) prev = c;
     i++;
   }
-  return out.join("");
+
+  return {
+    out: out.slice(0, i).join(""),
+    held: text.slice(i),
+    state: { mode, quote, cls, prev },
+  };
 }
+
+// Blank out comments, keeping every other byte where it was.
+export function stripComments(text) {
+  return stripCommentsChunk(text, initialCommentState(), { atEof: true }).out;
+}
+
+// Search a file that is too large to hold in memory, in overlapping windows.
+//
+// WHY THIS EXISTS. scan() does not read a file over 2 MB, and the remote-code
+// rule then went silent about it - which a developer reads as "nothing there",
+// on the one rule Google enforces first. Measured on 82 shipped release
+// packages: 23 skip a code file for size and THREE of them hide a real site in
+// one, including `new Function('return (' + source + ');')()` in a 4.0 MB
+// content script.
+//
+// RAISING THE LIMIT IS NOT THE FIX and was rejected: page-assist ships an 8.3 MB
+// chunk, so a bigger number only moves the cliff, and it costs that memory on
+// every scan of every package. This reads a fixed window instead, so a 40 MB
+// file costs the same as a 3 MB one.
+//
+// THE OVERLAP IS THE WHOLE CORRECTNESS ARGUMENT. grepAcross deliberately matches
+// across newlines, so a window boundary can fall through the middle of a match.
+// Every window therefore keeps the last OVERLAP characters of the previous one,
+// and hits are deduplicated by their ABSOLUTE offset in the file - not by their
+// offset in the window, which changes every time the window slides. OVERLAP must
+// stay comfortably longer than the longest pattern any caller passes.
+const WINDOW = 1 << 20; // 1 MB read
+const OVERLAP = 8192;
+
+// A match must be reported at a line number and with text a developer can
+// recognise. Neither is free here: the file is never whole, and on a minified
+// bundle "the line" is millions of characters. So the line is counted from the
+// newlines actually passed over, and the evidence is a SNIPPET around the match
+// rather than the line - which is what grep() would have produced anyway once it
+// truncated a 460 KB line to 160 characters.
+export function grepLarge(oversized, re, { filter = () => true, code = false, accept = null, maxPerFile = 25 } = {}) {
+  const hits = [];
+  for (const f of oversized || []) {
+    if (!filter(f)) continue;
+    let fd;
+    try { fd = openSync(f.abs, "r"); } catch { continue; }
+    const decoder = new StringDecoder("utf8");
+    const buf = Buffer.allocUnsafe(WINDOW);
+    let raw = "";        // window of original text
+    let view = "";       // same window, comments blanked when code is true
+    let base = 0;        // absolute offset of raw[0]
+    let lineBase = 1;    // 1-indexed line number of raw[0]
+    let heldRaw = "";    // characters stripCommentsChunk could not decide yet
+    let state = initialCommentState();
+    const emitted = new Set();
+    let truncated = false;
+
+    const search = () => {
+      const rx = new RegExp(re.source, re.flags.includes("g") ? re.flags : re.flags + "g");
+      let m;
+      while ((m = rx.exec(view)) !== null) {
+        if (m[0].length === 0) { rx.lastIndex++; continue; }
+        const abs = base + m.index;
+        if (emitted.has(abs)) continue;
+        // `accept` is consulted per MATCH and a rejection CONTINUES along the
+        // window, exactly as in grep(): rejecting a site can only ever reveal
+        // another one, never mask it.
+        if (accept && !accept(m, view)) continue;
+        emitted.add(abs);
+        if (emitted.size > maxPerFile) { truncated = true; return; }
+        const line = lineBase + countNewlines(raw, 0, m.index);
+        const from = Math.max(0, m.index - 40);
+        hits.push({
+          file: f.path,
+          line,
+          match: m[0].replace(/\s+/g, " ").slice(0, 120),
+          text: raw.slice(from, from + 200).replace(/\s+/g, " ").trim().slice(0, 160),
+        });
+      }
+    };
+
+    try {
+      for (;;) {
+        const n = readSync(fd, buf, 0, WINDOW, null);
+        const atEof = n === 0;
+        const chunk = heldRaw + (atEof ? decoder.end() : decoder.write(buf.subarray(0, n)));
+        let add = chunk;
+        if (code) {
+          const r = stripCommentsChunk(chunk, state, { atEof });
+          state = r.state;
+          heldRaw = r.held;
+          add = r.out;
+          raw += chunk.slice(0, r.out.length);
+        } else {
+          heldRaw = "";
+          raw += chunk;
+        }
+        view += add;
+        search();
+        if (truncated || atEof) break;
+        // Slide, keeping the overlap. Everything dropped is accounted for in
+        // base and lineBase so absolute offsets and line numbers keep counting.
+        if (view.length > OVERLAP) {
+          const drop = view.length - OVERLAP;
+          lineBase += countNewlines(raw, 0, drop);
+          base += drop;
+          view = view.slice(drop);
+          raw = raw.slice(drop);
+        }
+      }
+    } finally {
+      closeSync(fd);
+    }
+
+    if (truncated) {
+      hits.push({
+        file: f.path,
+        line: 1,
+        match: "",
+        text: `more than ${maxPerFile} sites in this file; the rest are not listed`,
+      });
+    }
+  }
+  return hits;
+}
+
+const countNewlines = (s, from, to) => {
+  let c = 0;
+  for (let i = from; i < to; i++) if (s.charCodeAt(i) === 10) c++;
+  return c;
+};
 
 // The same files with comments blanked, computed once. Every call-site question
 // is about code, not prose. Non-code files are passed through untouched.

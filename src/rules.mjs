@@ -18,7 +18,7 @@
 // is worth less than none. When in doubt a rule warns and says what a human
 // must check.
 
-import { grep, grepAcross, isCode, isMarkup, codeView } from "./scan.mjs";
+import { grep, grepAcross, grepLarge, isCode, isMarkup, codeView } from "./scan.mjs";
 import { MANIFEST_EVIDENCE, namespaceUsed, looksMinified, bareImports } from "./audit.mjs";
 
 // Permissions whose presence means USER data is in play. Used by the disclosure
@@ -342,7 +342,7 @@ export const RULES = [
   {
     id: "remote-code",
     category: "additional-requirements-for-manifest-v3",
-    run({ files, skipped = [] }) {
+    run({ files, skipped = [], oversized = [] }) {
       const out = [];
       // A TEST FILE IS NOT THE PACKAGE CHROME REVIEWS, and pretending otherwise
       // was this rule's largest source of wrong FAILs. Measured over 94 packages
@@ -497,10 +497,18 @@ export const RULES = [
           && !EVAL_NO_ARGS.test(tail);
       };
       const source = new Map(files.map((f) => [f.path, f.lines]));
-      const evals = grep(codeView(files), /(^|[^.\w$])eval\s*\(|new\s+Function\s*\(/, isCode, executesAString)
+      const EVAL_RE = /(^|[^.\w$])eval\s*\(|new\s+Function\s*\(/;
+      const evals = grep(codeView(files), EVAL_RE, isCode, executesAString)
         // Report the ORIGINAL line, not the blanked one: evidence a developer
         // reads has to match what is in their editor.
-        .map((h) => ({ ...h, text: source.get(h.file)?.[h.line - 1] ?? h.text }));
+        .map((h) => ({ ...h, text: source.get(h.file)?.[h.line - 1] ?? h.text }))
+        // THE FILES TOO BIG TO HOLD ARE SEARCHED, NOT APOLOGISED FOR (T-0417).
+        // Same pattern, same per-match `accept`, same comment blanking - the
+        // only difference is that grepLarge slides a window over the file
+        // instead of holding it. These are appended rather than reported
+        // separately so a 4 MB content script produces the same FAIL as a 4 KB
+        // one; the size of the file is the tool's problem, not the developer's.
+        .concat(grepLarge(oversized, EVAL_RE, { filter: isCode, code: true, accept: executesAString }));
       split(evals, (shipped, tests) => shipped.length
         ? finding({
             severity: "fail",
@@ -521,7 +529,11 @@ export const RULES = [
               + "build output: if these files do ship, review each site as a real remote-code risk.",
             evidence: tests,
           }));
-      const dynImport = grepAcross(files, /import\s*\(\s*["'`](https?:)?\/\//, isCode);
+      const DYN_IMPORT_RE = /import\s*\(\s*["'`](https?:)?\/\//;
+      const dynImport = grepAcross(files, DYN_IMPORT_RE, isCode)
+        // Not comment-blanked, matching grepAcross above: this pattern needs a
+        // URL literal, which a prose comment does not carry by accident.
+        .concat(grepLarge(oversized, DYN_IMPORT_RE, { filter: isCode }));
       split(dynImport, (shipped, tests) => shipped.length
         ? finding({
             severity: "fail",
@@ -556,17 +568,24 @@ export const RULES = [
       // the cliff, and page-assist ships an 8.3 MB chunk. What must not survive
       // is the SILENCE, because a developer reads "no findings" as "nothing
       // there" and this is the rule Google enforces first.
-      const unreadCode = skipped.filter((s) => /\.(js|mjs|cjs|ts|jsx|tsx|html?)$/i.test(s.path || ""));
+      //
+      // WHAT IS LEFT OF THAT GAP after T-0417 is HTML, and only HTML. The
+      // JavaScript is now streamed above, so the warning must subtract exactly
+      // what was streamed - printing "could not check" about a file this rule
+      // did read is the same defect pointing the other way, and it would train
+      // someone to go looking by hand for a site the tool already found.
+      const streamed = new Set(oversized.filter(isCode).map((o) => o.path));
+      const unreadCode = skipped.filter((s) =>
+        /\.(js|mjs|cjs|ts|jsx|tsx|html?)$/i.test(s.path || "") && !streamed.has(s.path));
       if (unreadCode.length) {
         out.push(finding({
           severity: "warn",
-          title: `${unreadCode.length} code file(s) were too large to read, so this rule could not check them`,
+          title: `${unreadCode.length} file(s) were too large to read, so this rule could not check them`,
           detail:
-            "This is a limitation of the scan, not a defect found in your extension. Files over 2 MB are not read, "
-            + "and remote code executed inside one of them would not appear above - so treat the result of this rule "
-            + "as covering only the files listed as read. Bundled service workers and content scripts are the usual "
-            + "ones to exceed it, and they are also where a reviewer looks first. Search these files yourself for "
-            + "eval(, new Function(, a dynamic import() of a URL, and <script src> pointing off-package.",
+            "This is a limitation of the scan, not a defect found in your extension. JavaScript over 2 MB is "
+            + "searched in a streaming pass, but these files are not, so remote code inside one of them would not "
+            + "appear above - treat the result of this rule as covering only the files listed as read. Search these "
+            + "yourself for eval(, new Function(, a dynamic import() of a URL, and <script src> pointing off-package.",
           evidence: unreadCode.map((s) => ({ file: s.path, line: 1, text: s.why })),
         }));
       }
