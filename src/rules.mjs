@@ -728,6 +728,85 @@ export const RULES = [
               + "your build output: if these files do ship, it is a real remote-code violation.",
             evidence: tests,
           }));
+
+      // A FLUTTER WEB BUILD LOADS ITS RENDERER FROM GOOGLE'S CDN BY DEFAULT,
+      // and the fact that decides the verdict is a property of the PACKAGE
+      // rather than of any line. Found by reading flutter/flutter#84288, where
+      // two developers paste verbatim Blue Argon rejections naming
+      // `flutter_bootstrap.js` and `flutter.js`.
+      //
+      // WHY EVERY PATTERN ABOVE MISSES IT, measured rather than predicted. The
+      // loader resolves `${base}canvaskit.js` and hands the result to
+      // `import()` or to a `script.src`, so the value reaching the sink is a
+      // VARIABLE - the class T-0456 refused to widen a shape rule for, because
+      // tightening a shape cannot recover a value. Run over the verbatim
+      // snippet the rejected developer pasted into that thread, and over the
+      // current loader source, this rule reported nothing; the same file with
+      // the URL written as a literal FAILs, which is what proves the miss is
+      // real and not a broken harness.
+      //
+      // AND THE URL LITERAL IS NOT THE ANSWER EITHER, which is the part that
+      // makes this a rule instead of a signature. `getCanvaskitBaseUrl` in
+      // `flutter_js/src/utils.js` carries
+      // `https://www.gstatic.com/flutter-canvaskit` UNCONDITIONALLY and is
+      // bundled into the prebuilt `flutter.js` that every project ships, so the
+      // literal is present in the COMPLIANT build too. Failing on its presence
+      // would fail the developers who already did the right thing, which is the
+      // wrong alarm this repo keeps refusing - and it is the same trap one rung
+      // further on than T-0456: the deciding fact can be missing even when the
+      // URL literal IS inside the window you matched.
+      //
+      // WHAT DECIDES IT IS ALSO IN THE PACKAGE, which is why this is checkable.
+      // `flutter build web --no-web-resources-cdn` sets kUseLocalCanvasKitFlag,
+      // and `flutter_tools/lib/src/build_system/targets/web.dart` then (a)
+      // emits `"useLocalCanvasKit": true` into the buildConfig it writes into
+      // `flutter_bootstrap.js` and (b) copies the renderer into `canvaskit/` in
+      // the build output. Either one present means the renderer is local; both
+      // absent means it is fetched from gstatic at runtime.
+      //
+      // AMBIGUITY RESOLVES TOWARD COMPLIANT, matching the asymmetry this rule
+      // uses everywhere a wrong FAIL would cost more than a miss. The
+      // exonerations are checked against `files`, `skipped` AND `oversized`,
+      // because a real `canvaskit.js` is several megabytes and lands in the
+      // last two rather than the first.
+      const FLUTTER_CDN_RE = /https?:\/\/www\.gstatic\.com\/flutter-canvaskit/i;
+      const flutterCdn = grepAcross(files, FLUTTER_CDN_RE, isCode)
+        .concat(grepLarge(oversized, FLUTTER_CDN_RE, { filter: isCode }));
+      if (flutterCdn.length) {
+        const allPaths = [...files, ...skipped, ...oversized]
+          .map((e) => String(e.path || "").replace(/\\/g, "/"));
+        const localCopy = allPaths.some((p) =>
+          /(^|\/)canvaskit\/(canvaskit|skwasm|skwasm_heavy|wimp)\.js$/i.test(p));
+        // THE VALUE, NEVER THE BARE NAME. Matching `useLocalCanvasKit` on its
+        // own would exonerate every package alive: the property READ sits in
+        // the bundled loader source, identically in the compliant and the
+        // violating build. Only the compliant one carries it with a value.
+        const USE_LOCAL_RE = /useLocalCanvasKit["']?\s*:\s*(?:true|!0)\b/;
+        // A base URL the developer pinned themselves, to anything that is not
+        // another remote origin. Written so that pinning it AT a remote URL
+        // cannot exonerate.
+        const PINNED_LOCAL_RE = /canvasKitBaseUrl["']?\s*[:=]\s*["'`](?!https?:|\/\/)/;
+        const overridden = files.some((f) => USE_LOCAL_RE.test(f.text) || PINNED_LOCAL_RE.test(f.text))
+          || grepLarge(oversized, USE_LOCAL_RE).length > 0
+          || grepLarge(oversized, PINNED_LOCAL_RE).length > 0;
+        if (!localCopy && !overridden) {
+          out.push(finding({
+            severity: "fail",
+            title: "This Flutter web build loads its renderer from Google's CDN at runtime",
+            detail:
+              "Flutter's web loader fetches canvaskit.js (or skwasm.js) from www.gstatic.com at runtime, which is "
+              + "remotely hosted code in a Manifest V3 item. Rebuild with `flutter build web "
+              + "--no-web-resources-cdn`: that copies the renderer into a local canvaskit/ folder and records "
+              + "useLocalCanvasKit in flutter_bootstrap.js, and this check passes as soon as either is present. "
+              + "You will also need `\"content_security_policy\": {\"extension_pages\": \"script-src 'self' "
+              + "'wasm-unsafe-eval'; object-src 'self';\"}` in your manifest, because the renderer compiles "
+              + "WebAssembly. Note that the URL itself still appears in flutter.js after the fix, so the string "
+              + "being present is not what this check is reporting.",
+            evidence: flutterCdn,
+          }));
+        }
+      }
+
       // "NO REMOTE CODE FOUND" IS A CLAIM ABOUT ALL THE CODE, and this rule was
       // making it about the code it happened to open. Same asymmetry
       // unused-permissions carries above, at a higher severity: scan.mjs skips

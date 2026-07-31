@@ -228,6 +228,18 @@ replay library you import, since that is normally where the choice is made, and
 it is decidable by reading your own import line. Working through one such case
 in public: https://github.com/mixpanel/mixpanel-js/issues/428#issuecomment-5145232728
 
+**Where we can answer it, we do, and Flutter is the worked example.** A Flutter
+web build assembles its renderer URL at runtime exactly as described above, so
+none of the patterns in the list finds it, and developers are rejected for it:
+see flutter/flutter#84288. But the thing that decides the verdict is in the
+package rather than in the expression. `flutter build web
+--no-web-resources-cdn` copies the renderer into a local `canvaskit/` folder and
+records `useLocalCanvasKit` in `flutter_bootstrap.js`, so we check for those
+instead of trying to read the URL. Note what that means: the
+`www.gstatic.com/flutter-canvaskit` string is in `flutter.js` either way, so the
+presence of the URL is **not** what we report. When a runtime URL has a
+package level tell, that is the thing to key on.
+
 ## The permission ledger
 
 ```bash

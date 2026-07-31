@@ -1791,5 +1791,102 @@ check("cli: a supplied url is not linted as a directory",
   check("CONTROL: an oversized file with no remote src produces no fail", !srcFail(bigSrcClean));
 }
 
+// ---------------------------------------------------------------------------
+// A FLUTTER WEB BUILD, where the deciding fact is a property of the PACKAGE.
+//
+// Two developers paste verbatim Blue Argon rejections into flutter/flutter#84288
+// naming flutter_bootstrap.js. Nothing on the line says "remote": the loader
+// resolves `${base}canvaskit.js` and hands a VARIABLE to import() or to a
+// script.src, which is the class T-0456 refused to widen a shape rule for.
+// What decides it is whether the package carries a LOCAL renderer, and that is
+// a fact this tool already has in hand.
+//
+// THE LAST TWO CONTROLS ARE THE ONES THAT MATTER. The gstatic URL literal ships
+// in flutter.js whether or not the build was fixed, so failing on the literal
+// would fail the developers who already did the right thing; and a bare
+// `useLocalCanvasKit` is a property READ present in both builds, so exonerating
+// on the name rather than on the value would silence this rule everywhere. Both
+// are asserted directly rather than left to reasoning.
+
+// The verbatim minified loader from the rejection pasted in that thread, and
+// the current loader source. Both carry the literal; neither hands a literal to
+// the sink.
+const FLUTTER_MINIFIED =
+  'var C=(o,e,n,r)=>window.flutterCanvasKit?Promise.resolve(window.flutterCanvasKit):'
+  + '(window.flutterCanvasKitLoaded=new Promise((t,i)=>{let a=n.hasImageCodecs,'
+  + 'd=e.canvasKitBaseUrl ?? `https://www.gstatic.com/flutter-canvaskit/${r}/`;'
+  + 'a&&(d=`${d}chromium/`);let c=`${d}canvaskit.js`;'
+  + 'let l=document.createElement("script");l.src=c,document.head.appendChild(l)}));\n';
+const FLUTTER_SOURCE =
+  'export function getCanvaskitBaseUrl(config, buildConfig) {\n'
+  + '  if (config.canvasKitBaseUrl) { return config.canvasKitBaseUrl; }\n'
+  + '  if (buildConfig.engineRevision && !buildConfig.useLocalCanvasKit) {\n'
+  + '    return joinPathSegments("https://www.gstatic.com/flutter-canvaskit", buildConfig.engineRevision);\n'
+  + '  }\n  return "canvaskit";\n}\n';
+
+const flutterFail = (dir) =>
+  lint(dir).findings.find((f) => f.rule === "remote-code" && f.severity === "fail"
+    && /Flutter web build loads its renderer/.test(f.title));
+const mkFlutter = (name, boot, extra = {}) =>
+  mkExt(name, "An extension whose user interface is a Flutter web build.", { "flutter_bootstrap.js": boot, ...extra });
+
+check("a Flutter build fetching its renderer from gstatic is a FAIL",
+  Boolean(flutterFail(mkFlutter("FlutterCdn", FLUTTER_MINIFIED))));
+check("...and the evidence names the file it was found in",
+  flutterFail(mkFlutter("FlutterCdn2", FLUTTER_MINIFIED))?.evidence
+    ?.some((e) => e.file === "flutter_bootstrap.js" && e.line > 0));
+check("the current loader SOURCE spelling is caught too, not just the minified one",
+  Boolean(flutterFail(mkFlutter("FlutterSrc", FLUTTER_SOURCE))));
+
+// THE EXONERATIONS. Each is a spelling of "the renderer is local", and each
+// must silence the finding on its own - a developer who applied any one of them
+// has fixed the violation.
+{
+  const flagged = mkFlutter("FlutterFlag", FLUTTER_MINIFIED
+    + 'window._flutter.buildConfig={"engineRevision":"abc","useLocalCanvasKit":true};\n');
+  check("--no-web-resources-cdn writes useLocalCanvasKit, and that clears the finding",
+    !flutterFail(flagged));
+
+  const pinned = mkFlutter("FlutterPin", FLUTTER_MINIFIED
+    + 'window.flutterConfiguration={canvasKitBaseUrl:"canvaskit/"};\n');
+  check("a base URL pinned to a local path clears the finding", !flutterFail(pinned));
+
+  // The renderer copied into the package. Nested, so it cannot go through mkExt.
+  const copied = mkFlutter("FlutterLocal", FLUTTER_MINIFIED);
+  mkdirSync(join(copied, "canvaskit"), { recursive: true });
+  writeFileSync(join(copied, "canvaskit", "canvaskit.js"), "var CanvasKitInit=function(){};\n");
+  check("a canvaskit/ copied into the package clears the finding", !flutterFail(copied));
+}
+
+// THE CONTROLS. Each of these would pass if the rule were keyed on the wrong
+// fact, and each is a shape that really occurs.
+check("CONTROL: a package that is not Flutter at all is silent",
+  !flutterFail(mkExt("Plain", "An extension with no Flutter in it whatsoever.", { "app.js": 'chrome.storage.local.get("k");\n' })));
+
+// The bare NAME appears in the compliant and the violating build alike, because
+// the property read lives in the bundled loader. FLUTTER_SOURCE contains it.
+// Without the value test this assertion fails, and every Flutter package would
+// be silently exonerated.
+check("CONTROL: a bare useLocalCanvasKit property READ does not exonerate",
+  Boolean(flutterFail(mkFlutter("FlutterRead", FLUTTER_SOURCE))),
+  "the exoneration must test the VALUE, not the identifier");
+
+// Pinning the base URL at a DIFFERENT remote origin is not a fix, and a
+// carelessly written exoneration would read it as one.
+check("CONTROL: a base URL pinned at another remote origin still FAILs",
+  Boolean(flutterFail(mkFlutter("FlutterRemotePin", FLUTTER_MINIFIED
+    + 'window.flutterConfiguration={canvasKitBaseUrl:"https://cdn.example.com/ck/"};\n'))));
+
+// And the literal alone is not the trigger: a package that merely MENTIONS the
+// URL while shipping the renderer locally is compliant, which is the whole
+// reason this is a rule and not a signature.
+{
+  const mentions = mkFlutter("FlutterMention", FLUTTER_SOURCE);
+  mkdirSync(join(mentions, "canvaskit"), { recursive: true });
+  writeFileSync(join(mentions, "canvaskit", "canvaskit.js"), "var CanvasKitInit=function(){};\n");
+  check("CONTROL: the URL literal alone, with a local renderer beside it, is not a FAIL",
+    !flutterFail(mentions));
+}
+
 console.log(`\nwebstore-lint: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
