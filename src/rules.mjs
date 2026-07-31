@@ -344,20 +344,58 @@ export const RULES = [
     category: "additional-requirements-for-manifest-v3",
     run({ files }) {
       const out = [];
+      // A TEST FILE IS NOT THE PACKAGE CHROME REVIEWS, and pretending otherwise
+      // was this rule's largest source of wrong FAILs. Measured over 94 packages
+      // from 160 public repos: of 20 remote-code findings, THREE cited nothing
+      // but test code - Nagi-ovo/voyager was failed on one line in
+      // `__tests__/preventAutoScrollScript.test.ts` and nothing else - and five
+      // more buried their real site in test noise (scriptcat 13 of 15 sites,
+      // TTV-AB 12 of 13, pie-ai-agent 6 of 7).
+      //
+      // Test files are what a build excludes; a developer who has to scroll past
+      // twelve of them to find the one line that matters is the developer who
+      // stops running the tool. So the sites are PARTITIONED, never deleted: a
+      // package that really does ship its tests still gets told, just not at
+      // FAIL. Silence is the failure mode this repo keeps punishing.
+      const looksLikeTest = (f) =>
+        /(^|\/)(__tests__|__test__|test|tests|spec|__mocks__|e2e|cypress)(\/|$)/i.test(f) ||
+        /\.(test|spec)\.[cm]?[jt]sx?$/i.test(f) ||
+        /(^|\/)test-[^/]*\.[cm]?[jt]sx?$/i.test(f);
+      // Named in the FAIL text so the count a developer sees adds up. Without
+      // this, evidence would list sites the title never accounts for.
+      const testNote = (tests) => tests.length
+        ? ` A further ${tests.length} site(s) are in test files, listed after the ones above; a build normally excludes those.`
+        : "";
+      // Shipped sites first so the line that matters is the line they read.
+      const split = (hits, mk) => {
+        if (!hits.length) return;
+        const tests = hits.filter((h) => looksLikeTest(h.file));
+        const shipped = hits.filter((h) => !looksLikeTest(h.file));
+        out.push(mk(shipped, tests));
+      };
       // [^>] already crosses newlines - a JS character class ignores line
       // structure - so the pattern was never the problem and must NOT be widened
       // to [\s\S]: that would run past the closing > of this tag and match a
       // remote src on some later <img>. The bug was that grep() fed it one line
       // at a time, so it was never shown a newline to cross.
       const remoteScript = grepAcross(files, /<script[^>]+src\s*=\s*["'](https?:)?\/\/[^"']+/i, isMarkup);
-      if (remoteScript.length) {
-        out.push(finding({
-          severity: "fail",
-          title: "A <script> tag loads code from outside the extension package",
-          detail: "Google names this as the first trigger for this category. The referenced file must be vendored into the package.",
-          evidence: remoteScript,
-        }));
-      }
+      split(remoteScript, (shipped, tests) => shipped.length
+        ? finding({
+            severity: "fail",
+            title: "A <script> tag loads code from outside the extension package",
+            detail: "Google names this as the first trigger for this category. The referenced file must be vendored into the package."
+              + testNote(tests),
+            evidence: [...shipped, ...tests],
+          })
+        : finding({
+            severity: "warn",
+            title: `A <script> tag loads remote code, but only in test files (${tests.length} site(s))`,
+            detail:
+              "Every site is in a file this tool reads as a test. Builds normally exclude those, so this is very "
+              + "likely not in the package you upload - which is why it is not a failure. Check your build output: "
+              + "if these files DO ship, it is the real violation and Google names it as the first trigger for this category.",
+            evidence: tests,
+          }));
       // eval and the Function constructor. `new Function()` is the one people
       // forget: it is eval wearing a different name and the policy names both.
       //
@@ -372,26 +410,58 @@ export const RULES = [
       // This NARROWS the rule, so the risk it carries is a miss rather than a
       // wrong fail. That is the safe direction here only because `$eval` is not
       // a JS API: there is no real string-execution path this now walks past.
-      const evals = grep(files, /(^|[^.\w$])eval\s*\(|new\s+Function\s*\(/, isCode);
-      if (evals.length) {
-        out.push(finding({
-          severity: "fail",
-          title: "eval() or new Function() executes a string as code",
-          detail:
-            "Google's trigger is executing a string fetched from a remote source. This tool cannot prove where " +
-            "your string comes from, so review each site: if the string is a literal in your own package it is " +
-            "defensible, and if any part of it arrives over the network it is the violation.",
-          evidence: evals,
-        }));
-      }
+      // COMMENTS BLANKED FIRST, and only comments. Fannon/search-bookmarks was
+      // failed on `popup/js/model/validateOptions.js:6`, whose text reads "This
+      // is a CSP-safe recursive validator that doesn't require eval() or
+      // Function()" - a sentence saying the code does NOT do this, quoted back
+      // as proof that it does. A comment cannot execute, so blanking one can
+      // never hide a violation.
+      //
+      // STRING LITERALS ARE DELIBERATELY LEFT ALONE (T-0411). Blanking them
+      // would also silence automa, which assembles code inside a template
+      // literal and then injects it - a real violation. `stripComments` steps
+      // over strings and preserves newlines, so line numbers still line up.
+      const source = new Map(files.map((f) => [f.path, f.lines]));
+      const evals = grep(codeView(files), /(^|[^.\w$])eval\s*\(|new\s+Function\s*\(/, isCode)
+        // Report the ORIGINAL line, not the blanked one: evidence a developer
+        // reads has to match what is in their editor.
+        .map((h) => ({ ...h, text: source.get(h.file)?.[h.line - 1] ?? h.text }));
+      split(evals, (shipped, tests) => shipped.length
+        ? finding({
+            severity: "fail",
+            title: "eval() or new Function() executes a string as code",
+            detail:
+              "Google's trigger is executing a string fetched from a remote source. This tool cannot prove where "
+              + "your string comes from, so review each site: if the string is a literal in your own package it is "
+              + "defensible, and if any part of it arrives over the network it is the violation."
+              + testNote(tests),
+            evidence: [...shipped, ...tests],
+          })
+        : finding({
+            severity: "warn",
+            title: `eval() or new Function() appears only in test files (${tests.length} site(s))`,
+            detail:
+              "Every site is in a file this tool reads as a test, and builds normally exclude those, so this is "
+              + "very likely not in the package you upload. That is why it is not a failure. Confirm against your "
+              + "build output: if these files do ship, review each site as a real remote-code risk.",
+            evidence: tests,
+          }));
       const dynImport = grepAcross(files, /import\s*\(\s*["'`](https?:)?\/\//, isCode);
-      if (dynImport.length) {
-        out.push(finding({
-          severity: "fail",
-          title: "A dynamic import() pulls a module from a remote URL",
-          evidence: dynImport,
-        }));
-      }
+      split(dynImport, (shipped, tests) => shipped.length
+        ? finding({
+            severity: "fail",
+            title: "A dynamic import() pulls a module from a remote URL",
+            ...(tests.length ? { detail: testNote(tests).trim() } : {}),
+            evidence: [...shipped, ...tests],
+          })
+        : finding({
+            severity: "warn",
+            title: `A dynamic import() pulls a remote module, but only in test files (${tests.length} site(s))`,
+            detail:
+              "Every site is in a file this tool reads as a test, which a build normally excludes. Confirm against "
+              + "your build output: if these files do ship, it is a real remote-code violation.",
+            evidence: tests,
+          }));
       return out;
     },
   },

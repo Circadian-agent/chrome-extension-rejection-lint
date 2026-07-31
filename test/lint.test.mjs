@@ -696,6 +696,135 @@ for (const [name, files] of Object.entries({
     !r.findings.some((f) => /characters/.test(f.title)));
 }
 
+// 1b. A UTF-8 BOM IS NOT A SYNTAX ERROR (s100, found by the 160-repo corpus).
+// `readFileSync(f, "utf8")` leaves U+FEFF at the head of the string and
+// `JSON.parse` throws on it; Chromium's JSON reader consumes it and loads the
+// extension. We reported MarvellousSuspender - published, 374 good message keys -
+// at FAIL for "a localised manifest field does not resolve", and SmartProxy at
+// warn for the same byte.
+//
+// The pass condition here is deliberately NOT "no listing-metadata finding",
+// which a scan that died on its way to the rule would also satisfy. It is that
+// the sentence living ONLY inside the BOM'd file comes back out in the verdict:
+// GAMBLING_DESC is what triggers prediction-markets-2026, so that rule firing is
+// proof the bytes were read, and nothing but successful parsing produces it.
+const BOM = "﻿";
+const localeBody = JSON.stringify({ extName: { message: "Odds" }, extDescription: { message: GAMBLING_DESC } });
+const bomLocale = pkg({
+  "manifest.json": { manifest_version: 3, name: "__MSG_extName__", version: "1.0.0", default_locale: "en", description: "__MSG_extDescription__", icons: { 16: "i.png" } },
+  "_locales/en/messages.json": BOM + localeBody,
+});
+{
+  const withBom = ids(lint(bomLocale)).sort();
+  check("bom: a BOM on messages.json does not change the verdict",
+    JSON.stringify(withBom) === JSON.stringify(ids(lint(localisedDesc)).sort()),
+    `${withBom} vs ${ids(lint(localisedDesc)).sort()}`);
+  check("bom: and the description inside the BOM'd file was actually read",
+    withBom.includes("prediction-markets-2026"), String(withBom));
+  check("bom: the package is not failed for unresolvable localisation",
+    !lint(bomLocale).findings.some((f) => /does not resolve/.test(f.title)));
+}
+// THE CONTROL, and it is the whole reason this is a BOM strip rather than a
+// softened parse error: a locale file that is genuinely malformed must STILL
+// fail and still say why. A fix that made JSON errors survivable would pass
+// every assertion above and quietly stop reporting broken packages.
+{
+  const r = lint(pkg({
+    "manifest.json": { manifest_version: 3, name: "X", version: "1.0.0", default_locale: "en", description: "__MSG_extDescription__", icons: { 16: "i.png" } },
+    "_locales/en/messages.json": BOM + '{"extDescription": {"message": "truncated"',
+  }));
+  check("bom: a BOM in front of REAL broken JSON still fails and says why",
+    bySeverity(r, "fail").includes("listing-metadata") && r.findings.some((f) => /does not resolve/.test(f.title)),
+    JSON.stringify(r.findings.map((f) => f.title)));
+}
+// The manifest reader takes the same strip. No manifest.json in the 160-repo
+// corpus carries a BOM, so this half is a latent trap rather than a measured
+// one - but it is the worse site: an unparseable manifest aborts the scan, so
+// the whole extension reads as unreadable rather than as one bad field.
+{
+  const r = lint(pkg({
+    "manifest.json": BOM + JSON.stringify({ manifest_version: 3, name: "Odds", version: "1.0.0", description: GAMBLING_DESC, icons: { 16: "i.png" } }),
+  }));
+  check("bom: a BOM on manifest.json is read, not reported as invalid JSON",
+    !r.findings.some((f) => /not valid JSON/.test(f.title)) && ids(r).includes("prediction-markets-2026"),
+    JSON.stringify(r.findings.map((f) => f.title)));
+}
+
+// 1c. REMOTE-CODE AIMED AT THE PACKAGE CHROME ACTUALLY REVIEWS (s100, corpus of
+// 94 packages). Two separate wrong FAILs, both measured on real extensions:
+// test files counted as shipped code, and a COMMENT counted as code.
+const MANIFEST = { manifest_version: 3, name: "X", version: "1.0.0", description: "A perfectly ordinary description of one purpose.", icons: { 16: "i.png" } };
+const rc = (r) => r.findings.filter((f) => f.rule === "remote-code");
+const evalFinding = (r) => rc(r).find((f) => /eval\(\) or new Function/.test(f.title));
+
+// Nagi-ovo/voyager's whole FAIL was one line in a __tests__ directory.
+{
+  const r = lint(pkg({ "manifest.json": MANIFEST, "__tests__/scroll.test.js": "const fn = new Function(code);\n" }));
+  const f = evalFinding(r);
+  check("remote-code: a test-only site is reported, not ignored", Boolean(f), JSON.stringify(ids(r)));
+  check("remote-code: and a test-only site is a warning, not a failure",
+    f?.severity === "warn" && /only in test files/.test(f.title), `${f?.severity} ${f?.title}`);
+  check("remote-code: the test-only warning still points at the line",
+    f?.evidence?.length === 1 && /scroll\.test\.js/.test(f.evidence[0].file) && f.evidence[0].line === 1);
+}
+// THE CONTROL THAT MAKES THAT A NARROWING AND NOT A MUTE: the same call in
+// shipped code is still a FAIL. Without this pair, "warn" could be the answer
+// everywhere and every assertion above would still pass.
+{
+  const r = lint(pkg({ "manifest.json": MANIFEST, "background.js": "const fn = new Function(code);\n" }));
+  const f = evalFinding(r);
+  check("remote-code: the identical call in shipped code still FAILS",
+    f?.severity === "fail" && !/only in test files/.test(f.title), `${f?.severity} ${f?.title}`);
+}
+// Mixed: scriptcat buried 2 real sites under 13 test ones. It must stay a FAIL,
+// and the site that matters must be the first one they read.
+{
+  const r = lint(pkg({
+    "manifest.json": MANIFEST,
+    "content.js": "const fn = new Function(code);\n",
+    "src/__tests__/a.test.js": "new Function('x');\n",
+    "test/b.spec.ts": "new Function('y');\n",
+  }));
+  const f = evalFinding(r);
+  check("remote-code: shipped + test sites stay a FAIL", f?.severity === "fail", String(f?.severity));
+  check("remote-code: and the shipped site is listed FIRST",
+    f?.evidence?.[0]?.file === "content.js", JSON.stringify(f?.evidence?.map((e) => e.file)));
+  check("remote-code: the test sites are kept, not dropped",
+    f?.evidence?.length === 3 && /further 2 site\(s\) are in test files/.test(f.detail || ""),
+    `${f?.evidence?.length} evidence`);
+}
+// A COMMENT CANNOT EXECUTE. Fannon/search-bookmarks was failed on a line reading
+// "a CSP-safe recursive validator that doesn't require eval() or Function()".
+{
+  const r = lint(pkg({
+    "manifest.json": MANIFEST,
+    "validate.js": "// This is a CSP-safe validator that doesn't require eval() or Function().\nexport const ok = 1;\n",
+  }));
+  check("remote-code: a comment mentioning eval() is not a finding", !evalFinding(r), JSON.stringify(rc(r).map((f) => f.title)));
+}
+// AND THE CONTROL FOR T-0411, which is why only comments are blanked and never
+// strings: automa assembles code inside a template literal and injects it. A fix
+// that blanked string contents would pass the comment test above and go blind to
+// the real violation.
+{
+  const r = lint(pkg({
+    "manifest.json": MANIFEST,
+    "inject.js": "const payload = `eval(${userInput})`;\nchrome.scripting.executeScript({ func: new Function(payload) });\n",
+  }));
+  const f = evalFinding(r);
+  check("remote-code: code built inside a string literal is still seen", f?.severity === "fail", String(f?.severity));
+}
+// Evidence must quote the developer's real line, not the comment-blanked copy.
+{
+  const r = lint(pkg({
+    "manifest.json": MANIFEST,
+    "run.js": "const fn = new Function(code); // build the handler\n",
+  }));
+  const f = evalFinding(r);
+  check("remote-code: evidence quotes the ORIGINAL line, not the blanked one",
+    /\/\/ build the handler/.test(f?.evidence?.[0]?.text || ""), JSON.stringify(f?.evidence?.[0]?.text));
+}
+
 // 2. NEW TAB PAGE. The rule detects newtab manipulation from code and used to
 // accept ANY of three override keys as the declaration that excuses it. Two of
 // them govern different surfaces, so declaring an unrelated homepage override

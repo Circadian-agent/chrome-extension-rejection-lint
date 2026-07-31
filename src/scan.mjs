@@ -10,6 +10,32 @@
 import { readdirSync, readFileSync, statSync, existsSync } from "node:fs";
 import { join, relative, extname } from "node:path";
 
+// EVERY JSON FILE IN AN EXTENSION IS READ THROUGH THIS, and it exists for one
+// byte sequence. `readFileSync(f, "utf8")` keeps a leading UTF-8 BOM (U+FEFF) in
+// the string, and `JSON.parse` rejects it - while Chrome accepts it, because
+// Chromium's JSON reader consumes a BOM before parsing. So a file Chrome loads
+// without complaint reads to us as "not valid JSON".
+//
+// That is not hypothetical and it is not rare enough to ignore. In a corpus of
+// 160 public repos, 4 of 2220 `messages.json` files carry a BOM, and two of them
+// belong to extensions published on the Web Store right now: MarvellousSuspender
+// (the maintained fork of The Great Suspender) and SmartProxy. MarvellousSuspender
+// was reported at FAIL - "a localised manifest field does not resolve" - about a
+// file with 374 perfectly good keys in it.
+//
+// THE DAMAGE IS WORSE THAN THE ONE FINDING. That extension's manifest carries
+// `"name": "__MSG_ext_extension_name__"` with `default_locale: en`, so failing to
+// read the locale file means we never learn its name or description at all, and
+// every rule that reads either one is then reading a placeholder. One unparsed
+// byte at offset 0 silently changes the input of four other rules.
+//
+// The manifest reader gets the same treatment. No manifest.json in the corpus
+// carries a BOM today, so that half is a latent trap rather than a measured one -
+// but it is the same one-line mistake at a far worse site, since an unparseable
+// manifest aborts the whole scan and reports a working extension as unreadable.
+const stripBom = (s) => (s.charCodeAt(0) === 0xfeff ? s.slice(1) : s);
+const parseJson = (text) => JSON.parse(stripBom(text));
+
 const SKIP_DIRS = new Set(["node_modules", ".git", ".svn", "dist-zip", ".cache"]);
 const MAX_BYTES = 2 * 1024 * 1024;
 const TEXT_EXT = new Set([
@@ -78,7 +104,7 @@ export function scan(root) {
           : `${root} is a file, not an unpacked extension directory`;
   } else {
     try {
-      manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+      manifest = parseJson(readFileSync(manifestPath, "utf8"));
     } catch (e) {
       manifestError = `manifest.json is not valid JSON: ${e.message}`;
     }
@@ -131,7 +157,7 @@ export function resolveI18n(manifest, files, skipped = []) {
   let messages = null;
   if (file) {
     try {
-      const parsed = JSON.parse(file.text);
+      const parsed = parseJson(file.text);
       // Chrome treats message names as case-insensitive, so the lookup is too.
       messages = new Map(Object.entries(parsed).map(([k, v]) => [k.toLowerCase(), v]));
     } catch (e) {
