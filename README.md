@@ -202,6 +202,32 @@ Statically, from the package you are about to upload:
 - New Tab Page changes made outside the official override API (`Blue Nickel`)
 - The four 1 August 2026 changes above
 
+### What the remote code check cannot see, and it is worth knowing before you rely on it
+
+It finds a remote script URL that is **written down** in your package: in a
+`<script src>` tag, assigned to an element's `src`, sat in a config key, or
+handed to a dynamic `import()`. That covers the common case and it reads inside
+bundled dependencies, which is where this usually comes from.
+
+**It does not find a URL that your code assembles at runtime from parts**, and
+some libraries now do exactly that. Current `mixpanel-browser` builds its
+recorder URL by joining a base path to a content hashed filename, so neither
+half is a remote script URL on its own and there is nothing to match.
+
+This is a real limit rather than a bug we have not got to yet. We built the rule
+that would catch it and measured it against 245 real Manifest V3 extensions: the
+code shape it keys on is the ordinary way an extension loads one of its **own**
+bundled files, so it fired on 44 places in 14 extensions, and the first 6 we
+opened and read were all innocent. Whether a script is local or remote depends on a value that
+usually reaches the loader through a variable, often from another function.
+A static text scan cannot follow that, so we would rather miss it than tell you
+your extension breaks a policy it does not.
+
+**What to do instead:** check which entry point of an analytics or session
+replay library you import, since that is normally where the choice is made, and
+it is decidable by reading your own import line. Working through one such case
+in public: https://github.com/mixpanel/mixpanel-js/issues/428#issuecomment-5145232728
+
 ## The permission ledger
 
 ```bash
