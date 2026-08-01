@@ -178,6 +178,74 @@ writeFileSync(join(newFn, "app.js"), 'chrome.storage.local.get("k");\nreturn new
 check("CONTROL: new Function( still fails", bySeverity(lint(newFn), "fail").includes("remote-code"));
 
 // ---------------------------------------------------------------------------
+// (1c) A DECLARED SANDBOX PAGE IS WHERE CHROME TELLS YOU TO PUT eval, and this
+// rule used to FAIL the developers who followed that advice (s147, found by
+// running the corpus through the new code-search index). vladlavrik/netify
+// declares sandbox.pages with an 'unsafe-eval' sandbox CSP and its one eval
+// site is the executor that runs in that page. A wrong FAIL is the thing that
+// gets a linter muted, and this one fired hardest on the compliant developer.
+const mkSandboxed = (extra, files) => {
+  const d = mkdtempSync(join(tmpdir(), "wsl-"));
+  writeFileSync(join(d, "manifest.json"), JSON.stringify({
+    manifest_version: 3, name: "Sandboxed", description: "An extension that executes user expressions inside a sandboxed page.",
+    icons: { 16: "i.png" }, permissions: ["storage"],
+    background: { service_worker: "sw.js" },
+    content_scripts: [{ matches: ["https://example.com/*"], js: ["content.js"] }],
+    sandbox: { pages: ["sandbox.html"] },
+    ...extra,
+  }));
+  writeFileSync(join(d, "sw.js"), 'chrome.storage.local.get("k");\n');
+  writeFileSync(join(d, "content.js"), 'document.title = "x";\n');
+  for (const [f, body] of Object.entries(files)) writeFileSync(join(d, f), body);
+  return d;
+};
+const rcAny = (dir, sev) => lint(dir).findings.find((f) => f.rule === "remote-code" && f.severity === sev && /eval|Function/.test(f.title));
+
+const sandboxed = mkSandboxed({}, { "executor.js": 'const r = eval(userExpression);\n' });
+check("eval in a package that declares a sandboxed page is not a FAIL",
+  !rcAny(sandboxed, "fail"));
+check("...but it is still REPORTED, at warn - a partition, never a deletion",
+  Boolean(rcAny(sandboxed, "warn")), JSON.stringify(lint(sandboxed).findings.filter((f) => f.rule === "remote-code").map((f) => [f.severity, f.title])));
+
+// THE CONTROL THAT KEEPS THIS HONEST, and it is the whole reason the fix is a
+// partition. A sandbox declaration must not launder the SERVICE WORKER, which
+// the manifest itself names and which can never be sandboxed. If this ever goes
+// quiet, the narrowing swallowed the rule rather than a false hit.
+const sandboxedButSw = mkSandboxed({}, { "sw.js": 'chrome.storage.local.get("k");\neval(fetchedFromServer);\n' });
+check("CONTROL: a sandbox declaration does NOT excuse eval in the service worker",
+  Boolean(rcAny(sandboxedButSw, "fail")), JSON.stringify(lint(sandboxedButSw).findings.filter((f) => f.rule === "remote-code").map((f) => [f.severity, f.title])));
+
+const sandboxedButCs = mkSandboxed({}, { "content.js": 'document.title = "x";\neval(fromThePage);\n' });
+check("CONTROL: nor eval in a declared content script",
+  Boolean(rcAny(sandboxedButCs, "fail")));
+
+// A custom sandbox CSP that REMOVES 'unsafe-eval' means the page cannot eval,
+// so the finding stands. Without this, writing any sandbox CSP at all would
+// silence the rule - an excuse branch with no check on its own premise.
+const sandboxNoEvalCsp = mkSandboxed(
+  { content_security_policy: { sandbox: "sandbox allow-scripts; script-src 'self'" } },
+  { "executor.js": 'const r = eval(userExpression);\n' });
+check("CONTROL: a sandbox CSP that drops unsafe-eval does not excuse eval",
+  Boolean(rcAny(sandboxNoEvalCsp, "fail")));
+
+// ...and an empty sandbox.pages is not a sandbox.
+const sandboxEmpty = mkSandboxed({ sandbox: { pages: [] } }, { "executor.js": 'const r = eval(userExpression);\n' });
+check("CONTROL: an empty sandbox.pages list does not excuse eval",
+  Boolean(rcAny(sandboxEmpty, "fail")));
+
+// And the same package with NO sandbox key at all is unchanged - the fix must
+// not have altered the ordinary case, which is every other extension.
+const noSandbox = mkdtempSync(join(tmpdir(), "wsl-"));
+writeFileSync(join(noSandbox, "manifest.json"), JSON.stringify({
+  manifest_version: 3, name: "Plain", description: "An extension that evaluates a string with no sandbox declared.",
+  icons: { 16: "i.png" }, permissions: ["storage"], background: { service_worker: "sw.js" },
+}));
+writeFileSync(join(noSandbox, "sw.js"), 'chrome.storage.local.get("k");\n');
+writeFileSync(join(noSandbox, "executor.js"), 'const r = eval(userExpression);\n');
+check("CONTROL: with no sandbox declared the ordinary FAIL is unchanged",
+  Boolean(rcAny(noSandbox, "fail")));
+
+// ---------------------------------------------------------------------------
 // (1b) T-0414, FOUND ON SHIPPED RELEASE PACKAGES rather than source trees.
 // `new Function("return this")` is webpack's globalThis shim and a method named
 // `eval` is a definition, not a call. Between them they were the SOLE evidence

@@ -665,7 +665,72 @@ export const RULES = [
         // separately so a 4 MB content script produces the same FAIL as a 4 KB
         // one; the size of the file is the tool's problem, not the developer's.
         .concat(grepLarge(oversized, EVAL_RE, { filter: isCode, code: true, accept: executesAString }));
-      split(evals, (shipped, tests) => shipped.length
+      // A DECLARED SANDBOX PAGE IS WHERE CHROME TELLS YOU TO PUT eval, and until
+      // s147 this rule FAILed the developers who followed that advice. Found by
+      // running the corpus against the new code-search index: vladlavrik/netify
+      // declares `"sandbox": {"pages": ["sandbox.html"]}` with a sandbox CSP of
+      // `... 'unsafe-inline' 'unsafe-eval'`, and its one eval site is
+      // `services/sandbox/executor/SandboxExecutor.ts` - the executor that RUNS
+      // in that page. That is the documented, sanctioned escape hatch, and we
+      // were reporting it at the top severity.
+      //
+      // This is the worst direction for a linter to be wrong in, and it is worse
+      // than the usual wrong FAIL: it fires hardest on the developer who read
+      // the policy and did the compliant thing, which is precisely the developer
+      // whose trust the tool needs.
+      //
+      // A SANDBOX DOES NOT LAUNDER THE WHOLE PACKAGE, so this is a partition and
+      // not an exemption. The manifest itself names the files that can never be
+      // sandboxed - the service worker and every declared content script - and
+      // eval in one of those is a violation whatever else the package declares.
+      // Those keep FAILing. Everything else becomes a warn that says plainly
+      // that the tool cannot tell which side of the boundary the call sits on,
+      // because from the file alone it genuinely cannot.
+      //
+      // AN EMPTY `sandbox.pages` IS NOT A SANDBOX, and a custom sandbox CSP that
+      // REMOVES 'unsafe-eval' is not one either - Chrome's default sandbox CSP
+      // grants it, so absence of a custom CSP means granted, but an explicit one
+      // that drops the token means the page cannot eval and the finding stands.
+      const sandboxPages = (manifest?.sandbox?.pages || []).filter(Boolean);
+      const sandboxCsp = manifest?.content_security_policy?.sandbox;
+      const sandboxAllowsEval = sandboxPages.length > 0
+        && (typeof sandboxCsp !== "string" || /'unsafe-eval'/.test(sandboxCsp));
+
+      // Named by the manifest, so this is not a guess about the file's role.
+      const norm = (p) => String(p).replace(/^\.?\//, "").toLowerCase();
+      const neverSandboxable = new Set();
+      if (manifest?.background?.service_worker) neverSandboxable.add(norm(manifest.background.service_worker));
+      for (const s of manifest?.background?.scripts || []) neverSandboxable.add(norm(s));
+      for (const cs of manifest?.content_scripts || []) {
+        for (const j of cs?.js || []) neverSandboxable.add(norm(j));
+      }
+
+      let evalsForSplit = evals;
+      if (sandboxAllowsEval) {
+        const hard = evals.filter((h) => neverSandboxable.has(norm(h.file)));
+        const soft = evals.filter((h) => !neverSandboxable.has(norm(h.file)));
+        evalsForSplit = hard;
+        // Emitted whenever there are any, never gated on the FAIL being absent -
+        // the same reasoning as the website partition above. A package with one
+        // service-worker eval and four sandbox-plausible ones must report all
+        // five, or the partition has quietly become a deletion.
+        if (soft.length) {
+          out.push(finding({
+            severity: "warn",
+            title: `eval() or new Function(), in a package that declares a sandboxed page (${soft.length} site(s))`,
+            detail:
+              "Your manifest declares sandbox.pages, and Chrome permits eval inside a sandboxed page - it is the "
+              + "documented way to execute a string in an extension. None of these sites is in your service worker "
+              + "or in a declared content script, so this tool cannot tell from the file alone whether they run "
+              + "inside the sandbox. If they do, they are allowed and you can ignore this. If any of them is "
+              + "reached from an ordinary extension page instead, it is still the violation Google names."
+              + ` Sandboxed page(s) declared: ${sandboxPages.join(", ")}.`,
+            evidence: soft,
+          }));
+        }
+      }
+
+      split(evalsForSplit, (shipped, tests) => shipped.length
         ? finding({
             severity: "fail",
             title: "eval() or new Function() executes a string as code",
