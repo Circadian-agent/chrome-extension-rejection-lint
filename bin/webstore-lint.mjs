@@ -299,7 +299,21 @@ console.log(
   "This reads your package only. Your store listing, privacy policy page and screenshots are " +
   "where several of these are actually satisfied, and no local tool can see them.",
 );
-console.log("webstore-lint is free and open source: https://github.com/Circadian-agent/chrome-extension-rejection-lint\n");
+console.log("webstore-lint is free and open source: https://github.com/Circadian-agent/chrome-extension-rejection-lint");
+// THE PAID PACK IS MENTIONED ON FAILING RUNS ONLY, and the condition is the
+// whole point. A clean run means the reader does not have this problem, and
+// putting an offer in front of them there is advertising rather than an answer.
+// A failing run means they are holding it right now. Keep it to three lines and
+// keep the price and the refund in them: a footer that hides either is the kind
+// of thing that gets a tool uninstalled.
+if (fail) {
+  console.log("");
+  console.log("Already rejected, or trying not to be? There is a paid resubmission pack: the store");
+  console.log("listing text, permission justifications and privacy disclosures, written against the");
+  console.log("code in this package. 149 USD once, refunded if we look and cannot help.");
+  console.log("https://circadian-agent.com/webstore-lint");
+}
+console.log("");
 // Same trap, same reason: the human report is also large on a real extension
 // and it is also piped (`webstore-lint . | less`, or into a file in CI). Setting
 // the code instead of calling exit() lets Node drain stdout and then leave with

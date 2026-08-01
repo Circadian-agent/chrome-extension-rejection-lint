@@ -216,6 +216,46 @@ const evalMethod = mkExt("Compiler", "An extension embedding a CSS compiler whos
 });
 check("a method DEFINITION named eval is not a remote-code FAIL", !rcFail(evalMethod));
 
+// s135, T-0413's second widening. EVAL_METHOD_DEF only matches an UNTYPED
+// parameter list closed immediately by `){`; Tardo/OdooTerminal's real
+// `async eval(code: string, options?: Partial<EvalOptions>, isolated_frame?:
+// boolean = false): Promise<any> {` pushes the closing brace outside the
+// 80-character lookahead window entirely, so no amount of widening that regex
+// would have seen it. Fixed by a signal that does not need the brace: a plain
+// identifier immediately followed by `:` inside `eval(...)` is not valid call
+// syntax in JS or TS, so it can only be a typed parameter declaration.
+const evalMethodTyped = mkExt("Terminal", "A developer terminal extension whose shell exposes an eval command.", {
+  "app.js": 'chrome.storage.local.get("k");\nclass Shell{async eval(code: string, options?: Partial<EvalOptions>, isolated_frame?: boolean = false): Promise<any> {\nreturn this.parse(code);\n}\n};\n',
+});
+check("a TYPED method DEFINITION named eval is not a remote-code FAIL", !rcFail(evalMethodTyped),
+  JSON.stringify(ids(lint(evalMethodTyped))));
+
+const evalMethodOptionalTyped = mkExt("Terminal2", "A developer terminal extension, optional first parameter.", {
+  "app.js": 'chrome.storage.local.get("k");\nclass Shell{eval(code?: string): void {\nreturn;\n}\n};\n',
+});
+check("...and with the parameter itself marked optional (code?:)", !rcFail(evalMethodOptionalTyped));
+
+// CONTROLS. The signal is deliberately narrow: a real call can never place a
+// bare `identifier:` right after `eval(`, but these three shapes are close
+// enough in appearance that a sloppier pattern could have swallowed them.
+const evalTernaryArg = mkExt("Ternary", "An extension whose eval call picks between two variables.", {
+  "app.js": 'chrome.storage.local.get("k");\nvar out=eval(cond ? remoteA : remoteB);\n',
+});
+check("CONTROL: eval(cond ? a : b) - a ternary argument - still fails",
+  Boolean(rcFail(evalTernaryArg)), JSON.stringify(ids(lint(evalTernaryArg))));
+
+const evalPlainCall = mkExt("PlainCall", "An extension calling eval on a fetched variable.", {
+  "app.js": 'chrome.storage.local.get("k");\nvar out=eval(userSuppliedCode);\n',
+});
+check("CONTROL: a plain eval(identifier) call with no colon still fails",
+  Boolean(rcFail(evalPlainCall)));
+
+const evalObjectArg = mkExt("ObjectArg", "An extension passing an object literal to eval, unusual but real code.", {
+  "app.js": 'chrome.storage.local.get("k");\nvar out=eval({code: remoteCode}.code);\n',
+});
+check("CONTROL: an object-literal argument (needs its own brace) still fails",
+  Boolean(rcFail(evalObjectArg)), JSON.stringify(ids(lint(evalObjectArg))));
+
 // CONTROLS for both narrowings. Each must fire, and each is a shape the
 // exclusion above deliberately does not cover - a prefix match or a loose
 // method test would swallow these and the tool would go quiet on real code.
@@ -258,6 +298,48 @@ const evalInString = mkExt("Cheatsheet", "An extension listing cross site script
   "app.js": 'chrome.storage.local.get("k");\nconst payloads=[{title:"eval(\'ale\'+\'rt(0)\');"}];\n',
 });
 check("CONTROL: eval( with arguments inside a string still fails", Boolean(rcFail(evalInString)));
+
+// ---------------------------------------------------------------------------
+// (1c-ii) s135, T-0413's second widening. `new Function("")` builds a function
+// with an EMPTY BODY - the same no-op proof as EVAL_NO_ARGS above, just the
+// other string-execution primitive. It is not an edge case: it is pdf.js's own
+// `isEvalSupported()` and AngularJS's `noUnsafeEval()`, both CSP-safety probes
+// that vendor into unrelated extensions verbatim. Four repos in the widened
+// corpus FAILed on nothing else: magnetgrouplabs/myjdownloader-extension-mv3
+// and listen1/listen1_chrome_extension (vendored angular[.min].js), and
+// MLabPages/classroom-office-reviewer and ttop32/MouseTooltipTranslator
+// (vendored pdf.js). See rules.mjs for the exact quoted source.
+const newFunctionEmpty = mkExt("PdfReader", "An extension bundling a PDF rendering library.", {
+  "app.js": 'chrome.storage.local.get("k");\nfunction isEvalSupported(){try{new Function("");return true}catch(e){return false}}\n',
+});
+check("new Function(\"\") with an empty string body is not a remote-code FAIL", !rcFail(newFunctionEmpty));
+
+const newFunctionEmptySingleQuote = mkExt("NgCsp", "An extension bundling AngularJS.", {
+  "app.js": "chrome.storage.local.get(\"k\");\nfunction noUnsafeEval(){try{new Function('');return false}catch(e){return true}}\n",
+});
+check("new Function('') with single quotes is not a remote-code FAIL either",
+  !rcFail(newFunctionEmptySingleQuote));
+
+// CONTROLS. An empty-body check is a narrow shape and must stay narrow: any
+// non-empty argument - even one character, even a variable placed where the
+// body should be empty - is exactly what this exclusion must NOT swallow.
+const newFunctionWhitespaceOnly = mkExt("Whitespace", "An extension whose probe body is whitespace, still a no-op.", {
+  "app.js": 'chrome.storage.local.get("k");\nnew Function("   ");\n',
+});
+check("CONTROL: whitespace-only body is still a no-op and stays clean",
+  !rcFail(newFunctionWhitespaceOnly));
+
+const newFunctionRealBody = mkExt("RealBody", "An extension building a function from a fetched string.", {
+  "app.js": 'chrome.storage.local.get("k");\nvar f=new Function("", remoteCode);\n',
+});
+check("CONTROL: a real body argument alongside an empty param name still fails",
+  Boolean(rcFail(newFunctionRealBody)), JSON.stringify(ids(lint(newFunctionRealBody))));
+
+const newFunctionSingleChar = mkExt("OneChar", "An extension executing a one-character string.", {
+  "app.js": 'chrome.storage.local.get("k");\nnew Function("1");\n',
+});
+check("CONTROL: a non-empty literal body, even one character, still fails",
+  Boolean(rcFail(newFunctionSingleChar)));
 
 // ---------------------------------------------------------------------------
 // (1d) "NO REMOTE CODE FOUND" IS A CLAIM ABOUT ALL THE CODE. scan.mjs does not
@@ -1522,6 +1604,26 @@ check("cli: a supplied url is not linted as a directory",
   check("unused-permissions: ...and does not drag in the used one",
     !/storage/.test(gone?.title || ""), gone?.title);
 
+  // 4b. s135, T-0413's second widening. A manifest can list the SAME permission
+  // twice - bonigarcia/browserwatcher's real `permissions` array is
+  // `["tabs","tabCapture","activeTab","storage","offscreen","storage"]`, a
+  // copy-paste duplicate. Before the dedupe this produced "Declared but never
+  // used: storage, storage", which reads as the tool double-counting rather
+  // than a fact about the manifest.
+  const duped = mk({ "app.js": 'chrome.tabs.query({}, () => {}); // storage is never touched' },
+    perm({ permissions: ["storage", "tabs", "storage"] }));
+  check("unused-permissions: a permission declared twice is reported once, not twice",
+    duped?.severity === "fail" && duped.title === "Declared but never used: storage",
+    duped ? `${duped.severity}: ${duped.title}` : "no finding at all");
+
+  // CONTROL: deduping must not merge two DIFFERENT permissions that both
+  // happen to be unused - the fix removes exact repeats, not distinct names.
+  const twoDistinct = mk({ "app.js": 'chrome.tabs.query({}, () => {});' },
+    perm({ permissions: ["storage", "tabs", "bookmarks"] }));
+  check("CONTROL: two DIFFERENT unused permissions are both still reported",
+    twoDistinct?.title === "Declared but never used: storage, bookmarks",
+    twoDistinct?.title);
+
   // 5. A SOURCE TREE. The permission's call site is inside a dependency that is
   //    not on disk, which is why refined-github was failed for scripting and
   //    alarms. The bare import is the tell.
@@ -1941,6 +2043,30 @@ check("CONTROL: a base URL pinned at another remote origin still FAILs",
   writeFileSync(join(mentions, "canvaskit", "canvaskit.js"), "var CanvasKitInit=function(){};\n");
   check("CONTROL: the URL literal alone, with a local renderer beside it, is not a FAIL",
     !flutterFail(mentions));
+}
+
+// THE PAID PACK FOOTER, AND ITS CONTROL.
+//
+// The offer is only honest where the reader is already holding the problem, so
+// it is printed on failing runs and nowhere else. The negative is the assertion
+// that matters: without it, "the footer shows on a failure" is satisfied by a
+// footer printed unconditionally, which is the version that turns the tool into
+// an advertisement and gets it uninstalled.
+//
+// --json is checked too. It is what the GitHub Action parses, and prose written
+// into that stream is a broken machine contract, not a marketing choice.
+{
+  const failing = run(badDir).out;
+  const clean = run(cleanDir).out;
+  const jsonOut = run(badDir, "--json").out;
+  const PACK = "circadian-agent.com/webstore-lint";
+  check("cli: a failing run offers the paid resubmission pack", failing.includes(PACK));
+  check("cli: and states the price and the refund beside it",
+    failing.includes("149 USD") && /refunded if we look and cannot help/.test(failing));
+  check("CONTROL: a clean run never mentions the pack", !clean.includes(PACK));
+  check("CONTROL: and a clean run is still a run that printed a report",
+    clean.includes("failing") && clean.includes("informational"));
+  check("CONTROL: --json carries no footer prose", !jsonOut.includes(PACK));
 }
 
 console.log(`\nwebstore-lint: ${pass} passed, ${fail} failed`);

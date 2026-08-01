@@ -284,6 +284,27 @@ const propsOf = (line) => parseAnnotation(line)?.props ?? {};
   // measuring the escaping and not just the shape of any row at all.
   check("summary: control, an unescaped pipe would have sheared the row",
     "| FAIL | a | b |  |  |".split(/(?<!\\)\|/).slice(1, -1).length === 5);
+
+  // THE PAID PACK FOOTER. Failing runs only, and it keys on the failure COUNT,
+  // not on the exit code: `fail-on: never` leaves the check green while the
+  // findings are still there, and the reader still has the problem. The bad
+  // fixture above is invoked with exactly that setting, so it is also the proof.
+  const PACK = "circadian-agent.com/webstore-lint";
+  check("summary: a failing run offers the paid pack even when fail-on is never",
+    bad.summaryText.includes(PACK), bad.summaryText);
+  check("CONTROL: a clean run never mentions it", !clean.summaryText.includes(PACK));
+  // The warn-only fixture is the check that separates "has findings" from "has
+  // failures". Without it, gating on findings.length would pass every assertion
+  // here, and a developer with two warnings and nothing wrong gets sold to.
+  const warned = invoke({ WSL_PATH: WARNONLY });
+  check("CONTROL: warnings with no failures do not trigger it",
+    !warned.summaryText.includes(PACK), warned.summaryText);
+  check("CONTROL: ...and that run really did carry findings",
+    /needing your judgement/.test(warned.summaryText) && /\| WARN \|/.test(warned.summaryText),
+    warned.summaryText);
+  // Outward copy on a public surface, so the same house rules as action.yml.
+  check("summary: the pack footer has no em dash or accented characters",
+    !/[–—]/.test(bad.summaryText) && !/[^\x00-\x7F]/.test(bad.summaryText));
 }
 
 // --- outputs ----------------------------------------------------------------

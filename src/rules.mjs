@@ -547,16 +547,60 @@ export const RULES = [
       // sites are real-looking calls (`eval('ale'+'rt(0)')`) that happen to sit
       // in a string, and nothing local separates them from a genuine call, so
       // they are LEFT FAILING rather than guessed at.
+      //
+      // SAME PROOF, ONE MORE SHAPE (s135, T-0413's second widening). `new
+      // Function("")` builds a function with an EMPTY BODY - calling it does
+      // nothing and returns undefined, exactly the no-op EVAL_NO_ARGS already
+      // carves out, just spelled with the other string-execution primitive.
+      // It is not a rare shape: it is pdf.js's own `isEvalSupported()` -
+      // `try { new Function(""); return true; } catch { return false; }` -
+      // vendored, byte-for-byte or minified, into every extension that bundles
+      // PDF rendering, and it is AngularJS's `noUnsafeEval()` doing the same
+      // CSP probe with `new Function('')`. Measured on this widened corpus:
+      // magnetgrouplabs/myjdownloader-extension-mv3 (angular.js), listen1's
+      // vendored angular.min.js, and pdf.js in both MLabPages/
+      // classroom-office-reviewer and ttop32/MouseTooltipTranslator all FAILed
+      // on nothing but this literal - four unrelated repos wrongly failed by
+      // one vendored idiom whose entire purpose is CHECKING FOR CSP-SAFETY,
+      // which makes the false accusation an especially bad look: the tool
+      // fails a package for the very check that proves it is eval-aware.
       const BUNDLER_GLOBAL_SHIM = /^new\s+Function\s*\(\s*(["'])return this\1\s*\)/;
       const EVAL_METHOD_DEF = /^eval\s*\(\s*(?:[A-Za-z_$][\w$]*(?:\s*,\s*[A-Za-z_$][\w$]*)*)?\s*\)\s*\{/;
       const EVAL_NO_ARGS = /^eval\s*\(\s*\)/;
+      const NEW_FUNCTION_EMPTY_BODY = /^new\s+Function\s*\(\s*(["'`])\s*\1\s*\)/;
+      // EVAL_METHOD_DEF ONLY CATCHES *UNTYPED* METHOD DEFINITIONS (s135, T-0413's
+      // second widening). Tardo/OdooTerminal declares
+      // `async eval(code: string, options?: Partial<EvalOptions>, isolated_frame?:
+      // boolean = false): Promise<any> {` on its terminal Shell class - a method
+      // named `eval` for evaluating a TERMINAL COMMAND, unrelated to the JS
+      // engine's `eval`. It is a method definition by the same logic as
+      // `openstyles/stylus`'s untyped one (a call is never followed by `){`... or
+      // here, by a TYPE), but EVAL_METHOD_DEF requires a plain identifier list
+      // immediately closed by `)\s*{`, and TypeScript/Flow signatures add type
+      // annotations, `?` optional markers, generics and default values that push
+      // the closing `{` well past this rule's 80-character lookahead window - so
+      // neither the old regex nor a wider version of it can reliably see the
+      // brace that proves this is a definition.
+      //
+      // THE SAFE SIGNAL DOES NOT NEED THE BRACE. `identifier:` (optionally
+      // `identifier?:`) directly inside the parens of `eval(...)` is not valid
+      // JavaScript or TypeScript CALL syntax - a bare `name: value` pair inside
+      // plain parens is a SyntaxError unless it is a parameter's type annotation
+      // in a function/method signature (an object-literal argument would need its
+      // own `{`, and a ternary's `cond ? a : b` always has whitespace or a `?`
+      // between the identifier and the colon that this pattern does not allow).
+      // So seeing `eval(` immediately followed by a plain identifier and a colon
+      // is sufficient on its own, well within the 80-character window, and cannot
+      // be produced by any real call to the global `eval`.
+      const EVAL_METHOD_DEF_TYPED = /^eval\s*\(\s*[A-Za-z_$][\w$]*\??\s*:/;
       const executesAString = (m, line) => {
         // m[1] is the leading non-identifier char of the eval branch, which is
         // part of the match but not part of the site.
         const at = m.index + (m[1] ? m[1].length : 0);
         const tail = line.slice(at, at + 80);
         return !BUNDLER_GLOBAL_SHIM.test(tail) && !EVAL_METHOD_DEF.test(tail)
-          && !EVAL_NO_ARGS.test(tail);
+          && !EVAL_NO_ARGS.test(tail) && !NEW_FUNCTION_EMPTY_BODY.test(tail)
+          && !EVAL_METHOD_DEF_TYPED.test(tail);
       };
       const source = new Map(files.map((f) => [f.path, f.lines]));
       const EVAL_RE = /(^|[^.\w$])eval\s*\(|new\s+Function\s*\(/;
@@ -931,7 +975,20 @@ export const RULES = [
     category: "excessive-permissions",
     run({ manifest, files, skipped = [], oversized = [] }) {
       if (!manifest) return [];
-      const declared = [...(manifest.permissions || []), ...(manifest.optional_permissions || [])];
+      // DEDUPED, because a manifest can and does list the same permission
+      // twice. bonigarcia/browserwatcher's `permissions` array is
+      // `["tabs","tabCapture","activeTab","storage","offscreen","storage"]` -
+      // a genuine copy-paste duplicate in the source, found widening the
+      // corpus (T-0413, s135). Without this, the finding read "Declared but
+      // never used: storage, storage", which looks like the TOOL is
+      // malfunctioning (double-counting) even though the underlying claim -
+      // storage really is unused - was correct either time. A `Set` cannot
+      // change which permissions are judged unused (the filter below still
+      // sees every distinct permission name exactly once, same as before for
+      // every manifest that does not have this bug), so this only removes a
+      // confusing repeated entry from the reported text; it cannot turn a
+      // true finding into a false one or vice versa.
+      const declared = [...new Set([...(manifest.permissions || []), ...(manifest.optional_permissions || [])])];
       // Comments blanked first. A permission whose only trace is "// we used to
       // call chrome.bookmarks.getTree here" is the COMMONEST real form of an
       // unused permission - the feature was deleted and the note left behind -

@@ -131,6 +131,19 @@ export function summary(result, policy) {
   }
   lines.push("");
   lines.push("Run it yourself: `npx webstore-lint ./my-extension`");
+  // FAILING RUNS ONLY, and it keys on `fail` rather than on the exit code. With
+  // `fail-on: never` the check stays green while the findings are still there,
+  // and the reader still has the problem the pack answers. A run with warnings
+  // and no failures gets nothing, and a clean run returned above this line.
+  if (fail) {
+    lines.push("");
+    lines.push(
+      "Already rejected, or trying not to be? There is a paid resubmission pack: the store " +
+        "listing text, permission justifications and privacy disclosures, written against the code " +
+        "in this package. 149 USD once, refunded if we look and cannot help. " +
+        "[What is in it](https://circadian-agent.com/webstore-lint)",
+    );
+  }
   return lines.join("\n");
 }
 

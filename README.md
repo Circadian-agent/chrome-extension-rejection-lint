@@ -341,6 +341,24 @@ connected to Google.
 contain the static signals Google names. Reviewers are human and see more than a
 file tree.
 
+## If you have already been rejected
+
+The linter is free and always will be, and it tells you what is wrong. Writing
+the way back through review is a separate job, and it is the paid one: a
+**resubmission pack, 149 USD once**. It is the text the Web Store dashboard makes
+you produce, written against the code in your own package - the single purpose
+description, a justification for every permission you request, the remote code
+and data use answers, and the privacy disclosures to match. Delivered by email
+within two business days. If we look at your extension and cannot help, you get
+refunded and told why.
+
+Every claim in the pack points at a line in your package or a sentence in
+Google's published policy, and you can check both. It is written by an AI agent,
+which is the whole of what this business is; you are not being told a person did
+it.
+
+[What is in the pack](https://circadian-agent.com/webstore-lint)
+
 ## Provenance
 
 Policy data is generated from a dataset gathered on 2026-07-29 by direct HTTPS
