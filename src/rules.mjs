@@ -564,10 +564,48 @@ export const RULES = [
       // one vendored idiom whose entire purpose is CHECKING FOR CSP-SAFETY,
       // which makes the false accusation an especially bad look: the tool
       // fails a package for the very check that proves it is eval-aware.
+      //
+      // AND `new Function()` WITH NO ARGUMENT AT ALL IS THE SAME NO-OP, spelled
+      // one character shorter (s137, T-0413's third widening). It builds
+      // `function anonymous() {}` - there is no string, so there is nothing for
+      // a string to arrive from. The old pattern required an empty QUOTED
+      // argument and therefore walked straight past the bare call.
+      //
+      // Measured on the 750-repo corpus: six files contain it and not one is
+      // string execution. They are `scripts/verify-extension.js`,
+      // `scripts/validate.mjs`, a security ARTICLE about MV3's CSP, and three
+      // test files named release-validator, secure-eval and safety. Every one is
+      // prose or a policy check that FORBIDS this call - the same shape as the
+      // pdf.js CSP probe above, and the same bad look: the tool failing a
+      // package for the check that proves the author is eval-aware.
+      // Mootong/x-twitter-media-downloader was FAILed on
+      //   assert(!/\bnew\s+Function\s*\(/.test(source), `new Function() is not allowed: ${filename}`)
+      // where the site is the ERROR MESSAGE of a build-time check asserting the
+      // shipped files contain no `new Function(` - sole evidence, at FAIL.
+      const NEW_FUNCTION_EMPTY_BODY = /^new\s+Function\s*\(\s*(?:(["'`])\s*\1\s*)?\)/;
+      // A `(` FOLLOWED IMMEDIATELY BY `?` IS NOT A CALL IN ANY JAVASCRIPT, which
+      // makes this the same kind of local proof as the empty argument list: `?`
+      // cannot begin an expression, so `eval(?` is a SyntaxError and the only
+      // thing that can produce it is a regex group opener - `(?:`, `(?=`, `(?!`,
+      // `(?<`. Two unrelated repos in the widened corpus, and both are regexes
+      // ABOUT eval rather than uses of it:
+      //
+      //   ha0z1/New-Bing-Anywhere (2116 stars) ships a highlight.js language
+      //     grammar in `dist/chromium/app/assets/index.js`, a 356 KB line whose
+      //     keyword alternation contains `|eval(?:cmd)?|`. That was the SOLE
+      //     evidence for a FAIL on a shipped build.
+      //   magicelk235/Viaduct-CLI validates a manifest's CSP with
+      //     `/(?:^|[\s;'"])unsafe-eval(?:[\s;'"]|$)/.test(csp)` - code whose
+      //     entire purpose is refusing unsafe-eval.
+      //
+      // Deliberately NOT a rule about regex literals in general. Telling a regex
+      // apart from a division needs a parser, and this file has already refused
+      // to let a quote-tracking scan silence findings (T-0416); this is one
+      // character of local syntax and needs neither.
+      const REGEX_GROUP_OPENER = /^(?:eval|new\s+Function)\s*\(\?/;
       const BUNDLER_GLOBAL_SHIM = /^new\s+Function\s*\(\s*(["'])return this\1\s*\)/;
       const EVAL_METHOD_DEF = /^eval\s*\(\s*(?:[A-Za-z_$][\w$]*(?:\s*,\s*[A-Za-z_$][\w$]*)*)?\s*\)\s*\{/;
       const EVAL_NO_ARGS = /^eval\s*\(\s*\)/;
-      const NEW_FUNCTION_EMPTY_BODY = /^new\s+Function\s*\(\s*(["'`])\s*\1\s*\)/;
       // EVAL_METHOD_DEF ONLY CATCHES *UNTYPED* METHOD DEFINITIONS (s135, T-0413's
       // second widening). Tardo/OdooTerminal declares
       // `async eval(code: string, options?: Partial<EvalOptions>, isolated_frame?:
@@ -600,7 +638,7 @@ export const RULES = [
         const tail = line.slice(at, at + 80);
         return !BUNDLER_GLOBAL_SHIM.test(tail) && !EVAL_METHOD_DEF.test(tail)
           && !EVAL_NO_ARGS.test(tail) && !NEW_FUNCTION_EMPTY_BODY.test(tail)
-          && !EVAL_METHOD_DEF_TYPED.test(tail);
+          && !EVAL_METHOD_DEF_TYPED.test(tail) && !REGEX_GROUP_OPENER.test(tail);
       };
       const source = new Map(files.map((f) => [f.path, f.lines]));
       const EVAL_RE = /(^|[^.\w$])eval\s*\(|new\s+Function\s*\(/;
@@ -1251,14 +1289,68 @@ export const RULES = [
         "http://www.w3.org/1998/Math/MathML",
         "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
         "http://www.w3.org/2001/XMLSchema",
+        // s137, T-0413's third widening. The eight above are all w3.org, so the
+        // list encoded "specification namespace" as "a URL at w3.org" and the
+        // wider corpus walked round it immediately: OOXML (every extension that
+        // touches .docx or .xlsx), WS-Trust and XMLDSig (SAML tooling), EPUB,
+        // TTML and Inkscape's SVG extension namespace all arrive at other hosts
+        // and are names by exactly the same argument - fixed by a specification,
+        // never fetched, and unchangeable to https even in principle.
+        "http://schemas.openxmlformats.org/",
+        "http://schemas.microsoft.com/office/",
+        "http://docs.oasis-open.org/ws-sx/",
+        "http://docs.oasis-open.org/wss/",
+        "http://www.w3.org/2000/09/xmldsig#",
+        "http://www.w3.org/ns/ttml",
+        "http://www.idpf.org/2007/opf",
+        "http://www.idpf.org/2007/ops",
+        "http://www.inkscape.org/namespaces/inkscape",
+        "http://sodipodi.sourceforge.net/DTD/",
+        "http://purl.org/dc/elements/",
+        "http://ns.adobe.com/",
       ];
+      // A LIST OF HOSTS CANNOT KEEP UP, so the general form is POSITION rather
+      // than authority. These three syntactic slots hold a NAME by definition:
+      //
+      //   xmlns="..." / xmlns:prefix="..."   an XML namespace declaration
+      //   createElementNS("...", ...)        the namespace argument of the DOM
+      //   getElementsByTagNameNS("...", ...) *NS family - always argument one
+      //   <!DOCTYPE x PUBLIC "..." "...">    a DTD system identifier
+      //
+      // None of them is a channel anything travels over, none can be rewritten
+      // to https without breaking the document, and no amount of user data can
+      // flow to one. This is what the w3.org/.dtd special case below was
+      // reaching for one host at a time.
+      //
+      // ANCHORED TO WHAT PRECEDES THE OPENING QUOTE, so it cannot exonerate a
+      // fetch: `fetch("http://x")` has `fetch(` before the quote and matches
+      // none of these.
+      const NAME_POSITION =
+        /(?:xmlns(?::[A-Za-z_][\w.\-]*)?\s*=\s*|[A-Za-z]*NS\s*\(\s*|PUBLIC\s+(["'])[^"']*\1\s*|SYSTEM\s+)$/;
+      // A URL WHOSE AUTHORITY CONTAINS `*` IS A MATCH PATTERN, NOT AN ENDPOINT.
+      // `matches: ["http://*/*"]`, `urls: ["http://*/*"]`, documentUrlPatterns,
+      // optional_host_permissions - 26 of the 181 evidence entries this rule
+      // produced over the 750-repo corpus. There is no host to connect to, so
+      // no user data can be sent over it, and "make it https" is not a fix but a
+      // change to which pages the extension covers. Broad access IS reported,
+      // by broad-host-permissions, which reads the manifest keys where it means
+      // something.
+      const WILDCARD_AUTHORITY = /^http:\/\/[^/]*\*/;
       const hits = grep(
         codeView(files),
         /["'`]http:\/\/(?!localhost|127\.0\.0\.1|\[::1\])[^"'`\s]+/i,
         (f) => isCode(f) || isMarkup(f),
-      ).filter((h) => {
-        const url = String(h.match || "").replace(/^["'`]/, "");
+        // PER MATCH, so the scan continues along the same line - see grep() in
+        // scan.mjs. As a post-filter this dropped the whole line when its FIRST
+        // http:// was a namespace, so a real endpoint sharing a line with an
+        // `xmlns` attribute went unreported. An `accept` callback resumes at the
+        // next match instead, the same reason the remote-code skips are written
+        // this way (T-0414).
+        (m, line) => {
+        const url = String(m[0] || "").replace(/^["'`]/, "");
         if (XML_NAMESPACES.some((ns) => url.startsWith(ns))) return false;
+        if (WILDCARD_AUTHORITY.test(url)) return false;
+        if (NAME_POSITION.test(line.slice(Math.max(0, m.index - 80), m.index))) return false;
         // DOCTYPE system identifiers are the same case as namespaces and were
         // missed by the first pass: `<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//
         // EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">` names a
@@ -1272,7 +1364,8 @@ export const RULES = [
         // document is still a plain-http link and stays reported.
         if (/^https?:\/\/(www\.)?w3\.org\/[^"'`\s]*\.dtd$/i.test(url)) return false;
         return true;
-      });
+      },
+      );
       if (!hits.length) return [];
       return [finding({
         severity: "warn",
@@ -1476,8 +1569,46 @@ export const RULES = [
         return { ...f, text, lines: text.split("\n") };
       });
       const redirect = String.raw`(?:chrome|browser)\.tabs\.update\s*\(`;
+      // AND THE WINDOW MAY NOT CROSS A BLOCK THAT CLOSES (s137, T-0413's third
+      // widening). 200 characters was picked without a measurement, and the
+      // measurement arrived as this rule's FIRST firing in any corpus run we
+      // have: sindresorhus/notifier-for-github (1978 stars), at FAIL, on
+      // `source/lib/tabs-service.js`, where the two halves are
+      //
+      //   line  7:  'chrome://newtab/',            <- an element of emptyTabUrls
+      //   line 16:  return browser.tabs.update(tabId, options);
+      //
+      // and everything between them is `] : [];`, a blank line, and a COMPLETE
+      // `createTab` function. The gap is 193 characters, so the finding existed
+      // by a margin of seven. What that extension does with the list is reuse a
+      // blank tab you already have instead of opening another one - the opposite
+      // of replacing what you get when you open a new tab - and the
+      // `tabs.update` it was paired with is a two-line generic wrapper whose
+      // destination is a parameter.
+      //
+      // The header above already states the intent this misses: the window is
+      // there "so a predicate in one function [does not] pair with a navigation
+      // in an unrelated one further down the file". A character count cannot
+      // express that; a closing brace or bracket at the start of a line can. If
+      // a block ENDED between the two sites they are not on one control-flow
+      // path, and a hijack has to be - the test and the redirect it guards live
+      // in the same body.
+      //
+      // IT IS A NO-OP ON MINIFIED CODE, which is the safe direction: a bundle
+      // has no line starts, so nothing between two sites can match and every
+      // shipped-bundle hijack is judged exactly as before. Shrinking the 200
+      // instead would have hit minified and readable code alike while still
+      // being a number nobody could defend.
+      //
+      // THE LIMIT, STATED RATHER THAN DISCOVERED: a hijack that closes a block
+      // between the guard and the redirect - `if (isNtp(u)) { log(); }` and then
+      // an unguarded `tabs.update` - is now a miss. It joins the aliased-API and
+      // non-tabs.update misses the header already names. Weighed against a
+      // wrong FAIL on a well-known extension, on a rule that has produced no
+      // true positive in any corpus run, that is the trade this file keeps making.
+      const gap = String.raw`(?:(?!\n[\t ]*[}\]])[\s\S]){0,200}?`;
       const hits = grepAcross(view, new RegExp(
-        String.raw`(?:${NTP})[\s\S]{0,200}?${redirect}` + "|" + String.raw`${redirect}[\s\S]{0,200}?(?:${NTP})`,
+        String.raw`(?:${NTP})${gap}${redirect}` + "|" + String.raw`${redirect}${gap}(?:${NTP})`,
         "gi"), isCode);
       if (!hits.length) return [];
       return [finding({

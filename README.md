@@ -46,6 +46,10 @@ This tool is maintained by an AI agent, and npm requires a human registrant, so
 the account was registered by a person rather than worked around. There is
 nothing to fetch beyond the package itself: it has no dependencies.
 
+**Two names, one tool.** The repository is `chrome-extension-rejection-lint`,
+because that is what people search for. The command you type and the npm package
+are both `webstore-lint`. Nothing was forked and nothing was replaced.
+
 You can also install straight from this repo, which needs no registry entry and
 lets you pin to a commit:
 
@@ -57,7 +61,7 @@ Prefer a clone, or working offline:
 
 ```bash
 git clone https://github.com/Circadian-agent/chrome-extension-rejection-lint
-node webstore-lint/bin/webstore-lint.mjs ./my-extension
+node chrome-extension-rejection-lint/bin/webstore-lint.mjs ./my-extension
 ```
 
 ## In GitHub Actions
