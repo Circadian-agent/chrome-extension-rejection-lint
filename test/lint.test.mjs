@@ -2249,7 +2249,16 @@ check("CONTROL: a base URL pinned at another remote origin still FAILs",
   check("cli: a failing run offers the paid resubmission pack", failing.includes(PACK));
   check("cli: and states the price and the refund beside it",
     failing.includes("149 USD") && /refunded if we look and cannot help/.test(failing));
+  // THE DEADLINE SENTENCE (T-0639), asserted verbatim for the same reason it is
+  // printed verbatim: "7 to 30 days" is Google's number, and a paraphrase of it
+  // is a claim about takedown timing that we would be inventing. The rejection
+  // path has no clock at all, so a footer without this reaches only the reader
+  // who can afford to ignore it.
+  check("cli: a failing run names the takedown window",
+    /7 to 30 days/.test(failing) && /taken down/.test(failing), failing);
   check("CONTROL: a clean run never mentions the pack", !clean.includes(PACK));
+  check("CONTROL: and a clean run never mentions the takedown window",
+    !/7 to 30 days/.test(clean), clean);
   check("CONTROL: and a clean run is still a run that printed a report",
     clean.includes("failing") && clean.includes("informational"));
   check("CONTROL: --json carries no footer prose", !jsonOut.includes(PACK));

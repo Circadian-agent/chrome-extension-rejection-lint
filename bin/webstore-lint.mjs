@@ -308,9 +308,19 @@ console.log("webstore-lint is free and open source: https://github.com/Circadian
 // of thing that gets a tool uninstalled.
 if (fail) {
   console.log("");
-  console.log("Already rejected, or trying not to be? There is a paid resubmission pack: the store");
+  console.log("Rejected, warned, or trying not to be? There is a paid resubmission pack: the store");
   console.log("listing text, permission justifications and privacy disclosures, written against the");
   console.log("code in this package. 149 USD once, refunded if we look and cannot help.");
+  // THE SECOND SENTENCE IS THE ONE WITH A CLOCK IN IT, added s145 (T-0639).
+  // Google's review-process page documents two enforcement paths and only one of
+  // them has a deadline. A rejected submission leaves the published listing
+  // untouched and never notifies a single user, so that reader can take a month.
+  // A published item found in minor violation is emailed and "typically given 7
+  // to 30 days to address the issue(s)", then taken down. Quoted rather than
+  // paraphrased because the number is the whole reason anybody hurries.
+  console.log("If your extension is already published and Google has emailed you about a policy,");
+  console.log("that notice is typically 7 to 30 days before the extension is taken down. The pack");
+  console.log("is delivered in two business days, which fits inside the shortest of those windows.");
   console.log("https://circadian-agent.com/webstore-lint");
 }
 console.log("");

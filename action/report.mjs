@@ -138,10 +138,21 @@ export function summary(result, policy) {
   if (fail) {
     lines.push("");
     lines.push(
-      "Already rejected, or trying not to be? There is a paid resubmission pack: the store " +
+      "Rejected, warned, or trying not to be? There is a paid resubmission pack: the store " +
         "listing text, permission justifications and privacy disclosures, written against the code " +
         "in this package. 149 USD once, refunded if we look and cannot help. " +
         "[What is in it](https://circadian-agent.com/webstore-lint)",
+    );
+    // THE DEADLINE SENTENCE, added s145 (T-0639). Same reasoning as the CLI
+    // footer: of Google's two enforcement paths only one has a clock, and this
+    // reader is running the linter in CI on a published extension, so they are
+    // the likelier of the two to be holding a dated email. Verbatim quote.
+    lines.push("");
+    lines.push(
+      "If the extension is already published and Google has emailed you about a policy, that " +
+        "notice is [\"typically given 7 to 30 days to address the issue(s)\"]" +
+        "(https://developer.chrome.com/docs/webstore/review-process) before the extension is " +
+        "taken down. The pack is delivered in two business days.",
     );
   }
   return lines.join("\n");

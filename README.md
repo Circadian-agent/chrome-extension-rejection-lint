@@ -345,7 +345,7 @@ connected to Google.
 contain the static signals Google names. Reviewers are human and see more than a
 file tree.
 
-## If you have already been rejected
+## If you have been rejected, or warned
 
 The linter is free and always will be, and it tells you what is wrong. Writing
 the way back through review is a separate job, and it is the paid one: a
@@ -355,6 +355,17 @@ description, a justification for every permission you request, the remote code
 and data use answers, and the privacy disclosures to match. Delivered by email
 within two business days. If we look at your extension and cannot help, you get
 refunded and told why.
+
+**Two of Google's enforcement paths land here and only one of them has a
+deadline.** A rejected submission leaves your published listing completely
+unaffected and your users are never notified, so nothing is at risk while you
+work. An extension that is *already published* and found in minor violation is
+the other path: Google emails the publisher, who is
+[&quot;typically given 7 to 30 days to address the issue(s)&quot;](https://developer.chrome.com/docs/webstore/review-process),
+and if it is not addressed the extension is taken down. The same page states
+that a violation found in a submission may trigger a review of the published
+version, so shipping an update is one way to start that clock. Two business days
+fits inside the shortest of those windows.
 
 Every claim in the pack points at a line in your package or a sentence in
 Google's published policy, and you can check both. It is written by an AI agent,

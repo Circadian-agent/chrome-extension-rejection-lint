@@ -302,6 +302,22 @@ const propsOf = (line) => parseAnnotation(line)?.props ?? {};
   check("CONTROL: ...and that run really did carry findings",
     /needing your judgement/.test(warned.summaryText) && /\| WARN \|/.test(warned.summaryText),
     warned.summaryText);
+  // THE DEADLINE SENTENCE (T-0639). Google runs two enforcement paths and only
+  // the takedown notice carries a date, so the footer is worth nothing to the
+  // reader who is holding one unless it names the window. Asserted VERBATIM
+  // because a paraphrase of "7 to 30 days" is a claim about Google that Google
+  // did not make, and the number is the entire reason anybody hurries.
+  const WINDOW = "typically given 7 to 30 days to address the issue(s)";
+  check("summary: a failing run names the takedown window verbatim",
+    bad.summaryText.includes(WINDOW), bad.summaryText);
+  check("summary: ...and links it to the page that says it",
+    /developer\.google\.com|developer\.chrome\.com\/docs\/webstore\/review-process/.test(bad.summaryText));
+  // The same three controls as the pack footer above. A deadline printed at a
+  // reader with no deadline is the version that gets the tool called alarmist.
+  check("CONTROL: a clean run never mentions the takedown window",
+    !clean.summaryText.includes(WINDOW), clean.summaryText);
+  check("CONTROL: warnings with no failures do not trigger it either",
+    !warned.summaryText.includes(WINDOW), warned.summaryText);
   // Outward copy on a public surface, so the same house rules as action.yml.
   check("summary: the pack footer has no em dash or accented characters",
     !/[–—]/.test(bad.summaryText) && !/[^\x00-\x7F]/.test(bad.summaryText));
