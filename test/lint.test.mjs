@@ -12,7 +12,7 @@
 // whose pass condition is also satisfied by the failure.
 
 import { lint, auditPermissions } from "../src/lint.mjs";
-import { stripComments, stripCommentsChunk, initialCommentState, excerptAround, grep } from "../src/scan.mjs";
+import { stripComments, stripCommentsChunk, initialCommentState, excerptAround, grep, htmlCommentRanges, insideHtmlComment } from "../src/scan.mjs";
 import { PERMISSION_API, NO_NAMESPACE_PERMISSIONS } from "../src/audit.mjs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -679,6 +679,72 @@ check(
 const remoteImg = html('<html><body>\n<script>var a = 1;</script>\n<img src="https://cdn.example.com/logo.png">\n</body></html>\n');
 check("the manifest was read, so a silent result means the rules ran", remoteImg.manifest?.name === "Fmt");
 check("a remote IMAGE is not reported as remote code", !ids(remoteImg).includes("remote-code"));
+
+// --- a commented-out <script src> is not remote code --------------------------
+//
+// Found by classifying the corpus rather than by reading our own fixtures
+// (s149). google/archat carries a commented-out Google Analytics block in
+// options/options.html and we reported it as a policy FAILURE - the highest
+// severity the tool has, on the most visible repo in the corpus. A commented tag
+// does not load, so there is nothing for Google to reject.
+//
+// EVERY ASSERTION HERE NAMES A SEVERITY, so a rule that silently stopped
+// producing findings fails these tests rather than passing them.
+
+const rcOf = (r, sev) => r.findings.find((f) => f.rule === "remote-code" && f.severity === sev);
+const commentedTitle = (r) => rcOf(r, "warn")?.title || "";
+
+const commented = html('<html><body>\n<!-- <script src="https://cdn.example.com/x.js"></script> -->\n</body></html>\n');
+check("a commented-out remote script is not a remote-code FAIL",
+  !rcOf(commented, "fail"),
+  JSON.stringify(commented.findings.filter((f) => f.rule === "remote-code").map((f) => [f.severity, f.title])));
+check("...but it is still REPORTED at warn - a partition, never a deletion",
+  /commented out/.test(commentedTitle(commented)), commentedTitle(commented) || "no warn at all");
+
+// The same tag spread over the lines a formatter would put it on, because the
+// whole reason grepAcross exists is that line breaks must not change the answer.
+const commentedWrapped = html('<html><body>\n<!--\n<script\n  src="https://cdn.example.com/x.js">\n</script>\n-->\n</body></html>\n');
+check("a commented-out remote script wrapped across lines is not a FAIL either",
+  !rcOf(commentedWrapped, "fail"));
+check("...and it is reported at warn too", /commented out/.test(commentedTitle(commentedWrapped)));
+
+// THE CONTROL THAT KEEPS THIS HONEST. A page with one commented tag and one live
+// tag must still FAIL, on the live one. If this goes quiet, the partition
+// swallowed the rule instead of a false hit - which is the exact failure the
+// website/test split in this same rule already warns about.
+const commentedPlusLive = html('<html><body>\n<!-- <script src="https://cdn.example.com/old.js"></script> -->\n<script src="https://cdn.example.com/live.js"></script>\n</body></html>\n');
+check("CONTROL: a live remote script beside a commented one still FAILs",
+  Boolean(rcOf(commentedPlusLive, "fail")),
+  JSON.stringify(commentedPlusLive.findings.filter((f) => f.rule === "remote-code").map((f) => [f.severity, f.title])));
+check("CONTROL: and the FAIL cites the LIVE tag, not the commented one",
+  rcOf(commentedPlusLive, "fail")?.evidence?.every((e) => !/old\.js/.test(e.text)) && rcOf(commentedPlusLive, "fail")?.evidence?.some((e) => /live\.js/.test(e.text)),
+  JSON.stringify(rcOf(commentedPlusLive, "fail")?.evidence?.map((e) => e.text)));
+
+// A closed comment EARLIER in the file must not launder a later live tag: the
+// naive "is there a <!-- above this line" test passes on this and is wrong.
+const afterComment = html('<html><body>\n<!-- just a note -->\n<script src="https://cdn.example.com/x.js"></script>\n</body></html>\n');
+check("CONTROL: a tag after a CLOSED comment is live and still FAILs",
+  Boolean(rcOf(afterComment, "fail")),
+  JSON.stringify(afterComment.findings.filter((f) => f.rule === "remote-code").map((f) => [f.severity, f.title])));
+
+// An unterminated <!-- resolves toward FAIL. This is the documented
+// disagreement with browser behaviour, and it is the safe direction for the
+// highest-severity rule in the tool - see htmlCommentRanges in scan.mjs.
+const unterminated = html('<html><body>\n<!-- someone forgot to close this\n<script src="https://cdn.example.com/x.js"></script>\n</body></html>\n');
+check("an unterminated comment resolves toward FAIL",
+  Boolean(rcOf(unterminated, "fail")),
+  JSON.stringify(unterminated.findings.filter((f) => f.rule === "remote-code").map((f) => [f.severity, f.title])));
+
+// And the scan-level helper on its own, so a regression is attributable to the
+// range finder rather than to the rule that uses it.
+{
+  const t = 'a<!--b-->c<!--d';
+  const r = htmlCommentRanges(t);
+  check("htmlCommentRanges finds the closed comment", r.length === 1 && r[0][0] === 1 && r[0][1] === 9, JSON.stringify(r));
+  check("insideHtmlComment is true inside and false outside",
+    insideHtmlComment(r, 5) && !insideHtmlComment(r, 0) && !insideHtmlComment(r, 9));
+  check("an unterminated trailing comment yields no range", !insideHtmlComment(r, 12));
+}
 
 // --- the permission ledger (src/audit.mjs) ----------------------------------
 //

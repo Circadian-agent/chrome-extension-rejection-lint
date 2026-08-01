@@ -18,7 +18,7 @@
 // is worth less than none. When in doubt a rule warns and says what a human
 // must check.
 
-import { grep, grepAcross, grepLarge, largeWindows, isCode, isMarkup, codeView, excerptAround } from "./scan.mjs";
+import { grep, grepAcross, grepLarge, largeWindows, isCode, isMarkup, codeView, excerptAround, htmlCommentRanges, insideHtmlComment, offsetOf } from "./scan.mjs";
 import {
   MANIFEST_EVIDENCE, PERMISSION_API, NO_NAMESPACE_PERMISSIONS,
   namespaceUsed, looksMinified, looksMinifiedLarge, bareImports,
@@ -441,7 +441,45 @@ export const RULES = [
           evidence: website,
         }));
       }
-      split(remoteScript, (shipped, tests) => shipped.length
+      // COMMENTED-OUT TAGS ARE THEIR OWN ANSWER, NOT A FAILURE AND NOT SILENCE.
+      // A <script src> inside <!-- --> does not load and cannot be rejected for,
+      // so failing on it is the wrong-fail case that gets a linter muted. We did
+      // exactly that to google/archat, whose options/options.html carries a
+      // commented-out Google Analytics block - the single most visible repo in
+      // our corpus, reported at the highest severity the tool has.
+      //
+      // IT GETS ITS OWN LABEL RATHER THAN JOINING THE WEBSITE OR TEST WARNS
+      // (T-0620). Those two sentences say "this file probably does not ship";
+      // this one says "this file ships and the tag is one edit from live". Three
+      // different facts, three different words. Overloading one of the existing
+      // ones would tell a developer to check their build output for a file that
+      // is already in it.
+      //
+      // Measured before it was written: 14 of 703 remote <script src> sites
+      // across 6,351 HTML files in the corpus cache are inside a comment, in six
+      // distinct repos.
+      const commentCache = new Map();
+      const inComment = (h) => {
+        const f = files.find((x) => x.path === h.file);
+        if (!f) return false; // cannot tell -> resolve toward FAIL, as elsewhere in this rule
+        if (!commentCache.has(f.path)) commentCache.set(f.path, htmlCommentRanges(f.text));
+        return insideHtmlComment(commentCache.get(f.path), offsetOf(f, h.line, h.col));
+      };
+      const commentedOut = remoteScript.filter(inComment);
+      const remoteScriptLive = remoteScript.filter((h) => !inComment(h));
+      if (commentedOut.length) {
+        out.push(finding({
+          severity: "warn",
+          title: `A <script> tag loading remote code is commented out (${commentedOut.length} site(s))`,
+          detail:
+            "Every site below sits inside an HTML comment, so it does not load and Google cannot reject you for it "
+            + "as it stands. It is reported because it ships in the package and is one edit from live: if you "
+            + "uncomment it before submitting, it becomes the first trigger Google names for this category. Delete "
+            + "it, or vendor the file into the package before you re-enable it.",
+          evidence: commentedOut,
+        }));
+      }
+      split(remoteScriptLive, (shipped, tests) => shipped.length
         ? finding({
             severity: "fail",
             title: "A <script> tag loads code from outside the extension package",

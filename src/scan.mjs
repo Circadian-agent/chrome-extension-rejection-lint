@@ -396,6 +396,52 @@ export function grepAcross(files, re, filter = () => true) {
 export const isCode = (f) => [".js", ".mjs", ".cjs", ".ts", ".jsx", ".tsx"].includes(f.ext);
 export const isMarkup = (f) => [".html", ".htm"].includes(f.ext);
 
+// Where a grepAcross hit sits in the file, from the line and column it reports.
+//
+// grepAcross deliberately returns line+col rather than the raw offset, because
+// that is what evidence carries and an extra field on a hit ends up in the
+// published report. A caller that needs the offset back can ask for it here
+// instead of every caller re-deriving it slightly differently.
+export function offsetOf(file, line, col) {
+  let at = 0;
+  for (let i = 0; i < line - 1; i++) at += (file.lines[i]?.length ?? 0) + 1; // +1 for the newline
+  return at + col;
+}
+
+// The byte ranges of every HTML comment in a document.
+//
+// WHY A LINTER NEEDS THIS AT ALL. A commented-out <script src="https://..."> is
+// not remote code. It does not load, it does not run, and Google cannot reject
+// an extension for it. Reporting one at FAIL - the highest severity this tool
+// has - is the wrong-fail case that gets a linter muted, and it happened on the
+// most visible repo in our own corpus: google/archat carries a commented-out
+// Google Analytics block in options/options.html and we called it a policy
+// violation. Measured across 6,351 HTML files in the 1,079-repo clone cache,
+// 14 of 703 remote <script src> sites (2.0%) are inside a comment.
+//
+// AN UNTERMINATED `<!--` IS TREATED AS NOT-A-COMMENT, which is deliberate and is
+// the one place this disagrees with a browser (an unclosed comment really does
+// swallow the rest of the document). The rule that uses this resolves every
+// ambiguity toward FAIL, the same convention the off-package test in rules.mjs
+// already follows, because a missed real violation is recoverable and a
+// confident wrong one is not believed twice. An unterminated comment is also
+// vanishingly rare next to the case this exists for.
+export function htmlCommentRanges(text) {
+  const ranges = [];
+  let i = 0;
+  for (;;) {
+    const open = text.indexOf("<!--", i);
+    if (open === -1) break;
+    const close = text.indexOf("-->", open + 4);
+    if (close === -1) break; // unterminated: see above, NOT a comment
+    ranges.push([open, close + 3]);
+    i = close + 3;
+  }
+  return ranges;
+}
+
+export const insideHtmlComment = (ranges, at) => ranges.some(([s, e]) => at >= s && at < e);
+
 // Blank out comments, keeping every other byte where it was.
 //
 // WHY THIS LIVES HERE rather than in the one rule that first needed it: a
