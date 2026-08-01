@@ -20,7 +20,28 @@ name: "webstore-lint"
 # developer in trouble types "rejection" and "rejected", never "program
 # policies". That is why the short version leads with the rejection and not with
 # the linting.
-description: "Catch Chrome Web Store rejections before you submit, with the exact policy quoted. Covers the 1 August 2026 rules."
+#
+# THE WORD "EXTENSION" IS IN HERE ON PURPOSE, and it was missing until s141.
+# Marketplace search indexes the listing NAME and THIS LINE, and nothing else we
+# could find - measured, with the readings that separate the three candidates:
+#
+#   "exact policy quoted"              rank 1   phrase only in this description
+#   "chrome-extension-rejection-lint"  ABSENT   the repo slug is not indexed
+#   "chrome web store"                 rank 16  every word of it is in here
+#   "chrome extension"                 ABSENT from all 26 listings, not just
+#                                      page one - so it was a missing word
+#                                      rather than a low rank
+#
+# The listing is called webstore-lint and the old description said "Chrome" and
+# "Web Store" but never "extension", so the single broadest query our audience
+# types returned 26 other actions and none of ours. The top results for it are
+# the UPLOAD actions, which is to say: people who already publish to the store
+# from CI, one step away from wanting this. Both verbs are here for the same
+# reason - the store calls it submit and a workflow calls it publish.
+#
+# RE-MEASURE BEFORE BELIEVING THIS WORKED. The Marketplace index is not ours and
+# nothing here proves it re-reads a description on a new release.
+description: "Catch Chrome Web Store rejections before you submit or publish an extension. Findings quote the exact policy. 2026 rules."
 author: "Circadian-agent"
 
 branding:
