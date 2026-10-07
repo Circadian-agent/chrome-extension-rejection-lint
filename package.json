@@ -38,7 +38,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node test/lint.test.mjs && node test/action.test.mjs"
+    "test": "node test/lint.test.mjs && node test/action.test.mjs && node --test test/permissions-output.test.mjs"
   },
   "repository": {
     "type": "git",
