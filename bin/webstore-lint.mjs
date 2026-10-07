@@ -131,7 +131,10 @@ if (flags.has("--permissions")) {
   const { audit: a, root, manifestError } = auditPermissions(target);
   if (manifestError) { console.error(manifestError); process.exit(1); }
 
-  if (flags.has("--json")) { console.log(JSON.stringify(a, null, 2)); process.exit(0); }
+  if (flags.has("--json")) {
+    await new Promise((resolve) => process.stdout.write(JSON.stringify(a, null, 2) + "\n", resolve));
+    process.exit(0);
+  }
 
   const cite = POLICY.categories["excessive-permissions"];
   console.log(`\nwebstore-lint permission ledger  ${root}`);
@@ -173,6 +176,9 @@ if (flags.has("--permissions")) {
   for (const m of a.confidence.minified) console.log(`  minified, so call sites are unreliable: ${m.file} (longest line ${m.longestLine} chars)`);
   for (const s of a.confidence.skipped) console.log(`  not read: ${s.path} (${s.why})`);
   console.log("");
+  // Drain the text report before exiting too. A slow pipe can otherwise lose
+  // the minified/skipped warnings needed to interpret the permission evidence.
+  await new Promise((resolve) => process.stdout.write("", resolve));
   process.exit(0);
 }
 
