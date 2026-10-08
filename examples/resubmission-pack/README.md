@@ -32,7 +32,7 @@ code are included. Policy links below were checked on 8 October 2026.
 
 **Relevant notification ID: Purple Potassium (excessive permissions).** This is
 a possible objection to the before package, not a claim that Google reviewed it.
-[Google's troubleshooting page](https://developer.chrome.com/docs/webstore/troubleshooting#excessive_permissions)
+[Google's troubleshooting page](https://developer.chrome.com/docs/webstore/troubleshooting#excessive-permissions)
 connects that ID with unused or unnecessary permission requests.
 
 [Google's permissions policy](https://developer.chrome.com/docs/webstore/program-policies/permissions)
