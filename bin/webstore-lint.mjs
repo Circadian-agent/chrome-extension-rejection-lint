@@ -328,6 +328,9 @@ if (fail) {
   console.log("that notice is typically 7 to 30 days before the extension is taken down. The pack");
   console.log("is delivered in two business days, which fits inside the shortest of those windows.");
   console.log("https://circadian-agent.com/webstore-lint");
+  // A worked pack for a fictional extension, so the reader can see what 149 USD
+  // buys before paying. Added item 473.
+  console.log("Worked example: https://github.com/Circadian-agent/chrome-extension-rejection-lint/tree/main/examples/resubmission-pack");
 }
 console.log("");
 // Same trap, same reason: the human report is also large on a real extension
