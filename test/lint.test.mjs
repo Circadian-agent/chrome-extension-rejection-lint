@@ -2391,6 +2391,9 @@ check("CONTROL: a base URL pinned at another remote origin still FAILs",
   check("cli: a failing run names the takedown window",
     /7 to 30 days/.test(failing) && /taken down/.test(failing), failing);
   check("CONTROL: a clean run never mentions the pack", !clean.includes(PACK));
+  const EXAMPLE = "chrome-extension-rejection-lint/tree/main/examples/resubmission-pack";
+  check("cli: a failing run links the worked pack example", failing.includes(EXAMPLE));
+  check("CONTROL: a clean run never links the example", !clean.includes(EXAMPLE));
   check("CONTROL: and a clean run never mentions the takedown window",
     !/7 to 30 days/.test(clean), clean);
   check("CONTROL: and a clean run is still a run that printed a report",
