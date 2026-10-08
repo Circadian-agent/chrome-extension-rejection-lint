@@ -347,6 +347,11 @@ file tree.
 
 ## If you have been rejected, or warned
 
+**[See a worked $149 resubmission pack](https://github.com/Circadian-agent/chrome-extension-rejection-lint/tree/main/examples/resubmission-pack).**
+A fictional extension, before-and-after manifests, permission justifications and
+privacy-practices guidance. Every code reference can be checked in the example.
+
+
 The linter is free and always will be, and it tells you what is wrong. Writing
 the way back through review is a separate job, and it is the paid one: a
 **resubmission pack, 149 USD once**. It is the text the Web Store dashboard makes
