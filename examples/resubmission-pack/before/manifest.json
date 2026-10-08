@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Amber Page (fictional pack example)",
+  "version": "1.0.0",
+  "description": "Click the toolbar button to tint the current page pale amber.",
+  "permissions": [
+    "tabs",
+    "storage",
+    "history",
+    "scripting"
+  ],
+  "background": {
+    "service_worker": "worker.js"
+  },
+  "action": {
+    "default_title": "Tint this page"
+  },
+  "host_permissions": [
+    "<all_urls>"
+  ]
+}
