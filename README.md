@@ -311,6 +311,17 @@ npx webstore-lint ./my-extension \
 This is the only flag that touches the network, and only when you pass a URL.
 Without it the tool opens no sockets at all.
 
+Run the privacy URL check and the permission ledger as separate commands:
+
+```bash
+npx webstore-lint ./my-extension --privacy-policy https://example.com/privacy
+npx webstore-lint ./my-extension --permissions
+```
+
+Combining `--privacy-policy`, `--permissions` or `--policy` is a usage error
+(exit 2). No checks run for that combination. `--json` works with either the
+privacy check or the permission ledger.
+
 It exists because of a real rejection. A developer was rejected under **Purple
 Lithium** and the cause was mundane: the privacy policy URL in their listing
 404'd, because the GitHub repository serving it was private. It looks perfectly

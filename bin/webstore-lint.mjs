@@ -88,6 +88,8 @@ if (flags.has("--help") || (!target && !flags.has("--policy"))) {
                                         and only when you pass a url
   webstore-lint --policy                list the policy data this build carries
 
+Use --permissions, --privacy-policy and --policy in separate commands.
+
 The one-liner, no install needed:
   npx webstore-lint <extension-directory>
 
@@ -98,6 +100,19 @@ This tool reads your package. Without --privacy-policy it makes no network
 request at all, and it cannot see your store listing or your screenshots. It is
 not affiliated with Google. A clean run is not a promise of approval.`);
   process.exit(flags.has("--help") ? 0 : 2);
+}
+
+// These branches produce different reports and return early. Combining them
+// used to exit successfully after silently skipping an explicitly requested
+// check, including a broken privacy URL. Reject before producing any report.
+const modes = ["--permissions", "--privacy-policy", "--policy"].filter(f => flags.has(f));
+if (modes.length > 1) {
+  console.error(`${modes.join(", ")} cannot be combined. No checks were run.`);
+  console.error("Run each mode separately:");
+  console.error("  webstore-lint <extension-directory> --permissions");
+  console.error("  webstore-lint <extension-directory> --privacy-policy <url>");
+  console.error("  webstore-lint --policy");
+  process.exit(2);
 }
 
 if (flags.has("--policy")) {
