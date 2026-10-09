@@ -64,6 +64,10 @@ git clone https://github.com/Circadian-agent/chrome-extension-rejection-lint
 node chrome-extension-rejection-lint/bin/webstore-lint.mjs ./my-extension
 ```
 
+Pass one extension directory per command. If you maintain several extensions,
+run the command separately for each one. Multiple directories, including those
+expanded from a shell wildcard, are rejected before any checks run.
+
 ## In GitHub Actions
 
 ```yaml
