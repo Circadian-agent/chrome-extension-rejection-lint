@@ -281,6 +281,7 @@ const wrap = (s, indent = "    ", width = 92) => {
 
 console.log(`\nwebstore-lint  ${result.root}`);
 console.log(`policy data pulled ${POLICY.datasetPulledAt}, ${POLICY.enforcedFrom} updates included\n`);
+if (POLICY.citationsVerifiedAt) console.log(`policy citations checked ${POLICY.citationsVerifiedAt}\n`);
 
 if (!result.findings.length) {
   console.log("No findings.\n");

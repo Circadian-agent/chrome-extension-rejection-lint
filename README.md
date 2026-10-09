@@ -183,10 +183,13 @@ the tool prints when relevant:
 1. **The disclosure rule got much wider.** It used to bite only when the data was
    not closely related to your single purpose. The live policy now covers any
    user data, disclosed before installation. Meanwhile Google's own
-   troubleshooting page for `Purple Nickel` still states the old, narrower rule
-   and still tells developers that undisclosed collection is fine when it matches
-   the single purpose. That guidance is contradicted by the policy it is meant to
-   explain.
+   troubleshooting page for `Purple Nickel` now also covers any user data, but
+   still says before collection rather than before installation. It also still
+   conditionally allows collection not disclosed in the listing. The
+   [User Data FAQ](https://developer.chrome.com/docs/webstore/program-policies/user-data-faq)
+   separately requires disclosure and consent within the product before collection;
+   a listing disclosure alone does not satisfy that requirement. Check both the
+   listing and the consent flow. These differences were rechecked on 9 October 2026.
 2. **The prediction markets ban has a carve-out the announcement omits entirely.**
    Simulated markets with no real money winnings may be allowed, if you clearly
    say no real money is involved.
@@ -404,6 +407,13 @@ Policy data is generated from a dataset gathered on 2026-07-29 by direct HTTPS
 fetch of Google's pages, parsed from raw HTML, with 278 verbatim fields
 re-checked programmatically against the raw bytes. Nothing in `data/policy.json`
 is admitted unless it is marked `VERIFIED_GOOGLE`.
+
+The citations published in `data/policy.json` were rechecked against 23 official
+Google pages on 2026-10-09. This refresh includes the affiliate policy's direct
+user benefit requirement and the installation button disclosure requirement. It
+also removes outdated claims that Google's troubleshooting page still carries
+the old personal-or-sensitive-data scope. Historical research fields in the
+source dataset retain their original measurement dates.
 
 That method was not paranoia. The first pass over the troubleshooting page, done
 through a summarising model, produced a fabricated policy quote and an invented

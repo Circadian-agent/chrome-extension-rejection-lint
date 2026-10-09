@@ -2,6 +2,7 @@
   "schema": 1,
   "generatedFrom": "research/data/chrome-rejection-reasons.json",
   "datasetPulledAt": "2026-07-29T00:08:05Z",
+  "citationsVerifiedAt": "2026-10-09",
   "enforcedFrom": "2026-08-01",
   "enforcementQuote": "Enforcement for these updated policies will begin on August 1, 2026. Extensions found out of compliance after this date may face enforcement action from the Chrome Web Store.",
   "announcementUrl": "https://developer.chrome.com/blog/cws-policy-updates-2026",
@@ -152,11 +153,7 @@
         "Visit the Privacy tab for your extension to verify that a privacy policy link appears in the \"Privacy Policy\" box (located at the bottom of the Privacy tab) and that the link works as expected.",
         "Ensure the privacy policy talks about data collection, usage, handling, and sharing.",
         "If you have done the above but are still encountering review issues, use the appeal button on the item detail page to appeal the verdict or ask for clarification."
-      ],
-      "supersededStillOnTroubleshooting": [
-        "If your Product handles personal or sensitive user data (including personally identifiable information, financial and payment information, health information, authentication information, website content and resources, form data, web browsing activity, user-provided content and personal communications), then your Product must: Post a privacy policy, and Handle the user data securely, including transmitting it via modern cryptography."
-      ],
-      "supersededMeasuredAt": "2026-07-31T13:50:08.088Z"
+      ]
     },
     "illegal-activities": {
       "title": "Illegal activities",
@@ -198,7 +195,7 @@
       "supersededStillOnTroubleshooting": [
         "We don't allow content or services that facilitate online gambling or prediction markets, including but not limited to online casinos, sports betting, lotteries, or games of skill that offer prizes of cash or other value."
       ],
-      "supersededMeasuredAt": "2026-07-31T13:50:08.088Z"
+      "supersededMeasuredAt": "2026-10-09"
     },
     "pornography": {
       "title": "Pornographic content",
@@ -225,7 +222,7 @@
         "If we become aware of content with child pornography, we will report it to the appropriate authorities and delete the Google Accounts of those involved with the distribution.",
         "Content which contains non-sexual nudity - such as artistic, educational, scientific, or cultural nudity - is generally allowed, but may impact the visibility of your Product."
       ],
-      "supersededMeasuredAt": "2026-07-31T13:50:08.088Z"
+      "supersededMeasuredAt": "2026-10-09"
     },
     "hate": {
       "title": "Hate content",
@@ -248,7 +245,7 @@
         "We don't allow content advocating against or inciting hatred towards groups of people based on their race or ethnic origin, religion, disability, gender, age, veteran status, nationality, sexual orientation, gender, gender identity, or any other characteristic that is associated with systematic discrimination or marginalization.",
         "Additionally, the visibility of your Product may be impacted if it contains generally hateful content not covered by the above definition."
       ],
-      "supersededMeasuredAt": "2026-07-31T13:50:08.088Z"
+      "supersededMeasuredAt": "2026-10-09"
     },
     "not-family-safe": {
       "title": "Not family safe",
@@ -269,7 +266,7 @@
         "Our content policies apply to your Product's content, including any ads it shows to users and any user-generated content it hosts or links to.",
         "Further, they apply to any content from your developer account that is publicly displayed in Chrome Web Store, including your developer name and the landing page of your listed developer website."
       ],
-      "supersededMeasuredAt": "2026-07-31T13:50:08.088Z"
+      "supersededMeasuredAt": "2026-10-09"
     },
     "violence": {
       "title": "Violent content",
@@ -297,7 +294,7 @@
         "Content that results in the unwanted sexualization of a person, including malicious claims about a person's sexual activities, sexual orientation, or gender identity.",
         "A series of posts/comments/photos that, taken together, clearly have the primary intention of harassment, even if each individual piece of content is not severe."
       ],
-      "supersededMeasuredAt": "2026-07-31T13:50:08.088Z"
+      "supersededMeasuredAt": "2026-10-09"
     },
     "single-use": {
       "title": "Single purpose",
@@ -314,14 +311,14 @@
       "triggers": [
         "The extension provides two or more purposes in the same extension (for example an extension providing image format conversion and bibliography generation).",
         "The extension provides one or more unrelated additional functionalities using the extension's action icon.",
-        "The extension provides a modified search experience on a new tab page which does not respect the user's choice of search provider or fails to utilize official Chrome search APIs (e.g., chrome.search)."
+        "The extension provides a modified search experience on a new tab page which does not respect the user’s choice of search provider or fails to utilize official Chrome search APIs (e.g., chrome.search)."
       ],
       "fixes": [
         "Narrow the functionality of your extension to clearly fit within one well-defined purpose and ensure that purpose is clearly described in your extension's metadata.",
         "If your extension is offering some functionality and also injecting ads, then either stop injecting ads or remove all other functionality besides ad injection.",
         "Chrome does not support optional new tab pages. If you wish to provide some functionality and an optional new tab page, you should separate the new tab page into a standalone extension.",
         "Don't offer another unrelated functionality in the extension's action icon.",
-        "If your new tab page extension includes a search experience, use the Chrome Search API to ensure it respects the user's choice of search provider."
+        "If your new tab page extension includes a search experience, use the Chrome Search API to ensure it respects the user’s choice of search provider."
       ]
     },
     "udp-prominent-disclosure": {
@@ -346,9 +343,10 @@
         "Consider providing users with an \"offline mode\" that only stores user data locally."
       ],
       "supersededStillOnTroubleshooting": [
-        "If your Product handles personal or sensitive user data that is not closely related to functionality described prominently in the Product's Chrome Web Store page and user interface, then prior to the collection, it must: Prominently disclose how the user data will be used, and Obtain the user's affirmative consent for such use."
+        "Prominent Disclosure Requirement: If your Product handles any user data, then prior to the collection, it must: Prominently disclose how the user data will be used. Obtain the user's affirmative consent for such use.",
+        "Collecting data that is not prominently disclosed in the Chrome Web Store listing is allowed so long as this data collection is consistent with the extension's single purpose, the user is informed of the data collection before it begins, and the user consents to the data collection."
       ],
-      "supersededMeasuredAt": "2026-07-31T13:50:08.088Z"
+      "supersededMeasuredAt": "2026-10-09"
     },
     "udp-secure": {
       "title": "User data policy - secure transmission",
@@ -368,11 +366,7 @@
         "Don't transmit user data over HTTP. If possible, use secure protocols for all requests.",
         "Don't encode data in request headers or query parameters, even over HTTPS. Headers and request URLs often appear in server logs, which can unintentionally leak this information.",
         "Use the Chrome DevTools or other network monitoring tools to watch the network requests the extension makes."
-      ],
-      "supersededStillOnTroubleshooting": [
-        "If your Product handles personal or sensitive user data (including personally identifiable information, financial and payment information, health information, authentication information, website content and resources, form data, web browsing activity, user-provided content and personal communications), then your Product must: Post a privacy policy, and Handle the user data securely, including transmitting it via modern cryptography."
-      ],
-      "supersededMeasuredAt": "2026-07-31T13:50:08.088Z"
+      ]
     },
     "udp-other-requirements": {
       "title": "User data policy - other requirements",
@@ -385,11 +379,11 @@
       "troubleshootingUrl": "https://developer.chrome.com/docs/webstore/troubleshooting#udp-other-requirements",
       "triggers": [
         "The extension is collecting Web Browsing Activity when it is not needed for a user facing feature.",
-        "Sensitive user information collected using the extension is being disclosed publicly."
+        "User data collected using the extension is being disclosed publicly."
       ],
       "fixes": [
         "Don't collect Web Browsing Activity unless it is required for a user-facing feature.",
-        "Ensure user information is not being disclosed publicly"
+        "Ensure user data is not being disclosed publicly."
       ]
     },
     "cryptocurrency-mining": {
@@ -439,7 +433,7 @@
         "Yellow Argon"
       ],
       "plainMeaning": "Your description is padded with keywords, site lists or locations to game search ranking.",
-      "policyQuote": "Keyword Spam is the practice of including irrelevant or excessive keywords in an extensions description in an attempt to manipulate its ranking, resulting in a spammy, negative user experience. We don't allow extensions with irrelevant or excessive metadata. Developers should focus on providing a clear and well-written description that uses keywords appropriately and in context. Some examples of Keyword Spam include: Lists of sites/brands/keywords without substantial added value Lists of regional locations Unnatural repetition of the same keyword more than 5 times We don't allow unattributed or anonymous user testimonials in the product's description.",
+      "policyQuote": "Keyword Spam is the practice of including irrelevant or excessive keywords in an extensions description in an attempt to manipulate its ranking, resulting in a spammy, negative user experience. We don't allow extensions with irrelevant or excessive metadata. Developers should focus on providing a clear and well-written description that uses keywords appropriately and in context. Some examples of Keyword Spam include: Lists of sites/brands/keywords without substantial added value Lists of regional locations Unnatural repetition of the same keyword more than 5 times We don’t allow unattributed or anonymous user testimonials in the product's description.",
       "policyUrl": "https://developer.chrome.com/docs/webstore/program-policies/listing-requirements",
       "troubleshootingUrl": "https://developer.chrome.com/docs/webstore/troubleshooting#keyword-stuffing",
       "triggers": [
@@ -452,7 +446,7 @@
         "We don't allow extensions with misleading, improperly formatted, non-descriptive, irrelevant, excessive, or inappropriate metadata, including but not limited to the extension's description, developer name, title, icon, screenshots, and promotional images.",
         "Unattributed or anonymous user testimonials in the product's description."
       ],
-      "supersededMeasuredAt": "2026-07-31T13:50:08.088Z"
+      "supersededMeasuredAt": "2026-10-09"
     },
     "redirection": {
       "title": "Redirection",
@@ -518,7 +512,7 @@
         "Red Zinc"
       ],
       "plainMeaning": "How you got users to install the extension was misleading, regardless of what the extension itself does.",
-      "policyQuote": "Extensions must be marketed responsibly. The set of functionalities promised by the extension must be stated clearly and in a transparent manner. The outcome of any user interaction should match the reasonable expectations that were set with the user. Extensions that use or benefit from deceptive installation tactics will be removed from the Chrome Web Store. Deceptive installation tactics include: Confusing or deceptive advertisements or marketing materials preceding the installation of your extension. The features of your extension should be clear when marketing your product. Misleading interactive elements as part of your distribution flow. This includes misleading call-to-action buttons or forms that imply an outcome other than the installation of an extension. Adjusting the Chrome Web Store product listing window with the effect of withholding or hiding extension metadata from the user. Bundling other extensions or offers within the same installation flow. Requiring unrelated user action to access advertised functionality.",
+      "policyQuote": "Extensions must be marketed responsibly. The set of functionalities promised by the extension must be stated clearly and in a transparent manner. The outcome of any user interaction should match the reasonable expectations that were set with the user. Extensions that use or benefit from deceptive installation tactics will be removed from the Chrome Web Store. Deceptive installation tactics include: Confusing or deceptive advertisements or marketing materials preceding the installation of your extension. The features of your extension should be clear when marketing your product. Misleading interactive elements as part of your distribution flow. This includes misleading call-to-action buttons or forms that imply an outcome other than the installation of an extension. Any call-to-action buttons preceding the installation of your extension must state that an extension will be installed. Adjusting the Chrome Web Store product listing window with the effect of withholding or hiding extension metadata from the user. Bundling other extensions or offers within the same installation flow. Requiring unrelated user action to access advertised functionality.",
       "policyUrl": "https://developer.chrome.com/docs/webstore/program-policies/deceptive-installation-tactics",
       "troubleshootingUrl": "https://developer.chrome.com/docs/webstore/troubleshooting#uws-distribution",
       "triggers": [
@@ -552,7 +546,7 @@
         "Yellow Potassium"
       ],
       "plainMeaning": "The extension is too thin to be worth listing, or it just links out to a service that does the actual work.",
-      "policyQuote": "Extensions must provide a basic degree of functionality and utility that provide value to the catalog of the Chrome Web Store. Some examples of common violations include: Extensions with no functionality or utility. Extensions with functionality that is not directly provided by the extension (e.g. file converters which only link to other file conversion services). Click-baity template extensions that only vary slightly in functionality with negligible utility (e.g. a \"Word of the Day\" extension and a \"Daily Inspirational Quotes\" extension, which use the same general extension template).",
+      "policyQuote": "Extensions must provide a basic degree of functionality and utility that provide value to the catalog of the Chrome Web Store. Some examples of common violations include: Extensions with no functionality or utility. Extensions with functionality that is not directly provided by the extension (e.g. file converters which only link to other file conversion services). Click-baity template extensions that only vary slightly in functionality with negligible utility (e.g. a “Word of the Day” extension and a “Daily Inspirational Quotes” extension, which use the same general extension template).",
       "policyUrl": "https://developer.chrome.com/docs/webstore/program-policies/minimum-functionality",
       "troubleshootingUrl": "https://developer.chrome.com/docs/webstore/troubleshooting#minimum_functionality",
       "triggers": [
@@ -571,8 +565,8 @@
       "notificationIds": [
         "Grey Titanium"
       ],
-      "plainMeaning": "You inject affiliate links, codes or cookies without disclosing it and without the user doing something that would lead them to expect it.",
-      "policyQuote": "Any affiliate program must be described prominently in the product's Chrome Web Store page, user interface, and before installation. Related user action is required before the inclusion of each affiliate code, link, or cookie. Some example violations include: An extension that updates a shopping-related cookie without the user's knowledge while the user is browsing shopping sites. An extension that appends an affiliate code to the URL or replaces an existing affiliate code in the URL without the user's explicit knowledge or related user action. An extension that applies or replaces affiliate promo codes without the user's explicit knowledge or related user action.",
+      "plainMeaning": "Affiliate links, codes or cookies need prominent disclosure, a direct user benefit related to the core functionality, and related user action before each inclusion.",
+      "policyQuote": "Any affiliate program must be described prominently in the product's Chrome Web Store page, user interface, and before installation. Affiliate links, codes, or cookies must only be included when the extension provides a direct and transparent user benefit related to the extension's core functionality. It is not permitted to inject affiliate links without related user action and without providing a tangible benefit to users. Some common violations include: Inserting affiliate links when no discount, cashback, or donation is provided. An extension that continuously injects affiliate links in the background without related user action. Related user action is required before the inclusion of each affiliate code, link, or cookie. Some example violations include: An extension that updates a shopping-related cookie without the user's knowledge while the user is browsing shopping sites. An extension that appends an affiliate code to the URL or replaces an existing affiliate code in the URL without the user's explicit knowledge or related user action. An extension that applies or replaces affiliate promo codes without the user's explicit knowledge or related user action.",
       "policyUrl": "https://developer.chrome.com/docs/webstore/program-policies/affiliate-ads",
       "troubleshootingUrl": "https://developer.chrome.com/docs/webstore/troubleshooting#affiliate_ads",
       "triggers": [
@@ -598,7 +592,7 @@
         "Leveraging techniques in an attempt to manipulate the distribution of updates to users and keep them on versions with previous violations"
       ],
       "fixes": [
-        "Don't attempt any further actions to circumvent intended limitations or enforcement actions.",
+        "Don’t attempt any further actions to circumvent intended limitations or enforcement actions.",
         "Continued attempts at enforcement circumvention will result in suspension of your developer account."
       ]
     }
@@ -633,7 +627,7 @@
       "blogQuote": "Disclosure Requirements Policy: We are updating our transparency standards to require that all data collection be prominently disclosed to the user—regardless of whether the data is closely related to the extension's single purpose. Additionally, developers must proactively disclose to users if their data handling practices change at any point after the initial installation.",
       "announcementUrl": "https://developer.chrome.com/blog/cws-policy-updates-2026",
       "inLivePolicyText": true,
-      "discrepancy": "The live Disclosure Requirements page now says 'any user data' and 'prior to installation'. The troubleshooting page for Purple Nickel still quotes the OLD narrower rule ('personal or sensitive user data that is not closely related to functionality described prominently...') and still tells developers that 'Collecting data that is not prominently disclosed in the Chrome Web Store listing is allowed so long as this data collection is consistent with the extension's single purpose'. That guidance is contradicted by the updated policy and is the single most dangerous stale instruction in Google's own documentation right now. MEASURED 2026-07-31: this is not one page. The phrase 'personal or sensitive' appears on NONE of the 18 program policy documents we read, including the single-page version that renders the whole policy at once, so it is absent from the policy rather than merely absent from the page we happened to open. All three pages that state a scope now say 'any user data': Disclosure Requirements, Protecting User Privacy ('If your Product handles any user data, then you must post an accurate and up to date privacy policy') and Data Handling ('If your product collects any user data, it must handle the user data securely, including transmitting it via modern cryptography'). Secure transmission also MOVED off the privacy page onto Data Handling. So a developer who concluded their extension is out of scope because its data is not sensitive is now wrong about the privacy policy requirement and the encryption requirement as well as about disclosure.",
+      "discrepancy": "Rechecked 2026-10-09: the troubleshooting quote now covers any user data, so the old scope mismatch is gone. It still says prior to collection, while the live policy says prior to installation. The troubleshooting fixes still allow collection not disclosed in the listing under stated conditions. The User Data FAQ separately says disclosure and consent must occur within the product UI, and that listing disclosures alone do not satisfy that requirement.",
       "carveOut": null,
       "notificationId": "Purple Nickel"
     },

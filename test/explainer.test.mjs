@@ -252,12 +252,18 @@ const PINNED = {
 // ------------------------------------------------------------- house style
 
 {
-  // Outward copy: no em dashes and no non-ASCII. Checked on the rendered
-  // output rather than the source, because that is what a reader sees.
-  const out = spawnSync(process.execPath, [CLI, BAD], { encoding: "utf8" }).stdout;
+  // House style applies to our prose. Google's verbatim citations must retain
+  // Google's punctuation, including curly apostrophes and em dashes. --quiet
+  // suppresses those citation blocks while retaining our finding explanations.
+  const out = spawnSync(process.execPath, [CLI, BAD, "--quiet"], { encoding: "utf8" }).stdout;
   const bad = [...out].filter((ch) => ch.charCodeAt(0) > 126);
-  check("the CLI output is pure ASCII", bad.length === 0, `found: ${[...new Set(bad)].join(" ")}`);
-  check("the CLI output contains no em dash", !out.includes("—"));
+  check("the CLI's own prose is pure ASCII", bad.length === 0, `found: ${[...new Set(bad)].join(" ")}`);
+  check("the CLI's own prose contains no em dash", !out.includes("—"));
+  const full = spawnSync(process.execPath, [CLI, BAD], { encoding: "utf8" }).stdout;
+  const normalizeWhitespace = (s) => s.replace(/\s+/g, " ").trim();
+  const cited = lint(BAD).findings.filter((f) => f.citation);
+  check("rendered policy quotes preserve source punctuation",
+    cited.every((f) => normalizeWhitespace(full).includes(normalizeWhitespace(f.citation.policyQuote))));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

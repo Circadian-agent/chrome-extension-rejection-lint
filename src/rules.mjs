@@ -1744,7 +1744,10 @@ export const RULES = [
         detail:
           "This changed on 1 August 2026 and the change is easy to miss. The old rule only bit when the data was " +
           "NOT closely related to the extension's single purpose. The live policy now covers ANY user data. " +
-          "The disclosure lives in your store listing, which this tool cannot see, so verify it yourself. " +
+          "Verify the store listing and consent flow against the live policy. Google's User Data FAQ also " +
+          "requires prominent disclosure and consent within the product before collection; a listing or " +
+          "privacy policy alone does not satisfy that requirement. See " +
+          "https://developer.chrome.com/docs/webstore/program-policies/user-data-faq. " +
           "READ THE WARNING BELOW ABOUT GOOGLE'S OWN TROUBLESHOOTING PAGE.",
         evidence: [
           ...dataPerms.map((p) => ({ file: "manifest.json", line: 1, text: `"${p}"` })),
