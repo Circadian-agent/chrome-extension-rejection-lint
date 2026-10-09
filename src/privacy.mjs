@@ -118,6 +118,7 @@ export async function checkPolicyUrl(url, { timeoutMs = 10000, fetchImpl = fetch
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
   let res;
+  let body;
   try {
     res = await fetchImpl(u.href, {
       signal: ctl.signal,
@@ -129,24 +130,30 @@ export async function checkPolicyUrl(url, { timeoutMs = 10000, fetchImpl = fetch
         "user-agent": "webstore-lint (privacy policy reachability check)",
       },
     });
+    // fetch resolves at headers. Keep the deadline active until the body is
+    // complete too, or a stalled page can hang the CLI and Action indefinitely.
+    if (res.ok) body = await res.text();
+    else ctl.abort(); // The status is enough evidence; do not download its body.
   } catch (e) {
-    clearTimeout(timer);
     // COULD NOT LOOK IS NOT THE SAME FACT AS NOT THERE. A DNS failure on the
     // developer's own machine, an offline CI runner or a proxy is not evidence
     // about the URL, so this warns and says which it is rather than failing.
-    const aborted = e.name === "AbortError";
+    const aborted = ctl.signal.aborted || e.name === "AbortError";
     return [...findings, f(
       "warn",
       aborted
-        ? `The privacy policy URL did not answer within ${timeoutMs / 1000}s`
-        : `The privacy policy URL could not be reached from here: ${e.message}`,
+        ? `The privacy policy URL did not finish loading within ${timeoutMs / 1000}s`
+        : res
+          ? `The privacy policy response could not be read from here: ${e.message}`
+          : `The privacy policy URL could not be reached from here: ${e.message}`,
       "This is not the same as the address being broken. It may be your network, a proxy, or an offline " +
         "runner. Open it yourself in a private browser window before you trust either answer. " +
         "A reviewer will be doing exactly that.",
       [{ file: "--privacy-policy", text: url }],
     )];
+  } finally {
+    clearTimeout(timer);
   }
-  clearTimeout(timer);
 
   const finalUrl = res.url || u.href;
   const redirected = finalUrl.replace(/\/$/, "") !== u.href.replace(/\/$/, "");
@@ -161,13 +168,6 @@ export async function checkPolicyUrl(url, { timeoutMs = 10000, fetchImpl = fetch
         "but you, and it looks fine while you are logged in.",
       [{ file: redirected ? `${url} -> ${finalUrl}` : url, text: `HTTP ${res.status}` }],
     )];
-  }
-
-  let body = "";
-  try {
-    body = await res.text();
-  } catch {
-    body = "";
   }
 
   // Strip tags and scripts before counting words, or a single-page app's bundle

@@ -347,6 +347,10 @@ What it reports:
 It checks *reachability*. It does not judge whether your policy is adequate,
 which is the thing a reviewer actually reads it for.
 
+The request has a ten-second deadline, including downloading the page body.
+A timeout or interrupted download produces a network warning, with no verdict
+on the unread page's content.
+
 ## What it cannot do
 
 It reads your package. It cannot see your store listing, your screenshots or your
