@@ -70,7 +70,8 @@ for (const f of VALUED) {
   const i = args.indexOf(f);
   if (i >= 0 && args[i + 1] && !args[i + 1].startsWith("--")) consumed.add(i + 1);
 }
-const target = args.find((a, i) => !a.startsWith("--") && !consumed.has(i));
+const targets = args.filter((a, i) => !a.startsWith("--") && !consumed.has(i));
+const target = targets[0];
 const policyUrl = valueOf("--privacy-policy");
 
 if (flags.has("--help") || (!target && !flags.has("--policy"))) {
@@ -89,6 +90,7 @@ if (flags.has("--help") || (!target && !flags.has("--policy"))) {
   webstore-lint --policy                list the policy data this build carries
 
 Use --permissions, --privacy-policy and --policy in separate commands.
+Check one extension directory per command.
 
 The one-liner, no install needed:
   npx webstore-lint <extension-directory>
@@ -100,6 +102,14 @@ This tool reads your package. Without --privacy-policy it makes no network
 request at all, and it cannot see your store listing or your screenshots. It is
 not affiliated with Google. A clean run is not a promise of approval.`);
   process.exit(flags.has("--help") ? 0 : 2);
+}
+
+// A second directory (including a shell-expanded glob) must not be silently
+// ignored: the first extension can pass while the unexamined one would fail.
+if (targets.length > 1) {
+  console.error("Pass only one extension directory per command. No checks were run.");
+  console.error("Run webstore-lint separately for each extension directory.");
+  process.exit(2);
 }
 
 // These branches produce different reports and return early. Combining them

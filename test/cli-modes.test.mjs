@@ -5,8 +5,31 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const CLI = fileURLToPath(new URL("../bin/webstore-lint.mjs", import.meta.url));
 const CLEAN = fileURLToPath(new URL("./fixtures/clean", import.meta.url));
+const BAD = fileURLToPath(new URL("./fixtures/bad", import.meta.url));
 const run = (...args) => spawnSync(process.execPath, [CLI, ...args], {
   encoding: "utf8", timeout: 5000,
+});
+
+test("multiple directories cannot hide a failing extension behind a clean one", () => {
+  for (const output of [[], ["--json"], ["--quiet"], ["--permissions", "--json"]]) {
+    for (const dirs of [[CLEAN, BAD], [BAD, CLEAN]]) {
+      const result = run(...dirs, ...output);
+      assert.equal(result.status, 2, [...dirs, ...output].join(" "));
+      assert.equal(result.stdout, "", "do not emit a report for only one of the targets");
+      assert.match(result.stderr, /one extension directory/);
+      assert.match(result.stderr, /No checks were run/);
+      assert.match(result.stderr, /separately/);
+    }
+  }
+});
+
+test("each extension can still be checked separately", () => {
+  const clean = run(CLEAN, "--json");
+  assert.equal(clean.status, 0);
+  assert.equal(JSON.parse(clean.stdout).counts.fail, 0);
+  const bad = run(BAD, "--json");
+  assert.equal(bad.status, 1);
+  assert.ok(JSON.parse(bad.stdout).counts.fail > 0);
 });
 
 test("an explicit privacy check cannot silently disappear into another report mode", () => {
@@ -80,6 +103,16 @@ test("a supported privacy check fetches the page, while rejected modes make no r
   for (const mode of ["--permissions", "--policy"]) {
     const rejected = runWithFetch(CLEAN, mode, "--privacy-policy", url);
     assert.equal(rejected.status, 2);
+    assert.doesNotMatch(rejected.stderr, /FETCH/);
+    assert.equal(rejected.stdout, "");
+  }
+  for (const args of [
+    [CLEAN, BAD, "--privacy-policy", url, "--json"],
+    ["--privacy-policy", url, CLEAN, BAD, "--quiet"],
+  ]) {
+    const rejected = runWithFetch(...args);
+    assert.equal(rejected.status, 2);
+    assert.match(rejected.stderr, /one extension directory/);
     assert.doesNotMatch(rejected.stderr, /FETCH/);
     assert.equal(rejected.stdout, "");
   }
