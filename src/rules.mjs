@@ -128,6 +128,30 @@ function bareOf(files) {
 // reads text files, so an icon that is present would be invisible to the check
 // and would report as missing on every package in the world.
 const norm = (p) => String(p).split(/[\\/]/).join("/").replace(/^\.\//, "").replace(/[?#].*$/, "");
+
+// Chromium validates content-script types from the filename, before reading
+// the resource. A bad type causes the whole content_scripts entry to be skipped.
+// SCSS is explicitly allowed for compatibility; this does not compile Sass.
+// Verified against extensions/common/utils/content_script_utils.cc and
+// net/base/mime_util.cc in Chromium, plus browser probes on 10 October 2026.
+const supportedContentFile = (path, type) =>
+  (type === "js" ? /\.(?:js|mjs)$/i : /\.(?:css|scss)$/i).test(path);
+
+function invalidContentFiles(manifest) {
+  const out = [];
+  const scripts = Array.isArray(manifest?.content_scripts) ? manifest.content_scripts : [];
+  for (const [index, script] of scripts.entries()) {
+    for (const type of ["js", "css"]) {
+      for (const path of Array.isArray(script?.[type]) ? script[type] : []) {
+        if (typeof path === "string" && !supportedContentFile(path, type)) {
+          out.push({ path, key: `content_scripts[${index}].${type}` });
+        }
+      }
+    }
+  }
+  return out;
+}
+
 function declaredFiles(manifest) {
   const m = manifest || {};
   const out = [];
@@ -136,8 +160,10 @@ function declaredFiles(manifest) {
   add(m.background?.page, "background.page");
   for (const s of m.background?.scripts || []) add(s, "background.scripts");
   for (const cs of m.content_scripts || []) {
-    for (const j of cs.js || []) add(j, "content_scripts[].js");
-    for (const c of cs.css || []) add(c, "content_scripts[].css");
+    // Unsupported types get their own loading warning. They may exist even
+    // when the scanner does not read that suffix, so do not call them missing.
+    for (const j of cs.js || []) if (supportedContentFile(j, "js")) add(j, "content_scripts[].js");
+    for (const c of cs.css || []) if (supportedContentFile(c, "css")) add(c, "content_scripts[].css");
   }
   add(m.action?.default_popup, "action.default_popup");
   add(m.browser_action?.default_popup, "browser_action.default_popup");
@@ -166,6 +192,23 @@ function missingDeclaredOf(manifest, files, skipped = []) {
 // ---------------------------------------------------------------------------
 
 export const RULES = [
+
+  {
+    id: "content-script-file-types",
+    run({ manifest }) {
+      const invalid = invalidContentFiles(manifest);
+      if (!invalid.length) return [];
+      return [finding({
+        severity: "warn",
+        title: `${invalid.length} content-script resource(s) have an unsupported file type`,
+        detail: "Chrome skips an entire content_scripts entry when any of its js or css filenames has an unsupported file type. "
+          + "Point js at built .js or .mjs files, and css at .css files, then reload the unpacked extension to verify it runs. "
+          + "The .user.js suffix is supported. Chrome also accepts .scss for compatibility, but does not compile Sass. "
+          + "This is a loading check, not a Chrome Web Store policy violation or a reason to delete permissions.",
+        evidence: invalid.map(d => ({ file: "manifest.json", line: 1, text: `${d.key}: ${d.path}` })),
+      })];
+    },
+  },
 
   {
     id: "symbolic-links",
@@ -1227,8 +1270,11 @@ export const RULES = [
       // names dist/background.js and we were linting a folder of seven JSON
       // files - "never used" there is a claim about nothing at all.
       const gone = missingDeclaredOf(manifest, files, skipped);
-      if (unread.length || minified.length || bare.length || gone.length) {
-        const why = gone.length
+      const invalidTypes = invalidContentFiles(manifest);
+      if (unread.length || minified.length || bare.length || gone.length || invalidTypes.length) {
+        const why = invalidTypes.length
+          ? `a content_scripts entry has an unsupported file type (${invalidTypes[0].path}); fix that loading error before deciding whether these permissions are unused`
+          : gone.length
           ? `manifest.json names ${gone.length} file(s) that are not in this directory (${gone[0].key}: ${gone[0].path}), so the code that uses these permissions is not here to be read`
           : unread.length
           ? `${unread.length} code file(s) in this package were not read (${unread[0].path}: ${unread[0].why}), so this scan did not see all of your code`

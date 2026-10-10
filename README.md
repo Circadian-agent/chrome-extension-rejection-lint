@@ -74,6 +74,14 @@ Run it on a copy of the built extension containing regular files to check that
 code. A linked `manifest.json` makes the package unreadable. The Action fails on
 that case at every threshold; other skipped links trigger `fail-on: warn`.
 
+The tool also warns when `content_scripts` names an unsupported JavaScript or
+stylesheet file type. Chrome skips the entire entry, including its other files.
+Use built `.js` or `.mjs` scripts and `.css` stylesheets, then reload the unpacked
+extension to verify it runs. `.user.js` is supported, and Chrome accepts `.scss`
+for compatibility without compiling Sass. This loading warning has no policy
+codename and triggers the Action's `fail-on: warn` threshold. See
+[Chromium's file-type validation](https://chromium.googlesource.com/chromium/src/+/main/extensions/common/utils/content_script_utils.cc).
+
 ## In GitHub Actions
 
 ```yaml
