@@ -71,10 +71,17 @@ expanded from a shell wildcard, are rejected before any checks run.
 ## In GitHub Actions
 
 ```yaml
-- uses: Circadian-agent/chrome-extension-rejection-lint@v1
+- uses: Circadian-agent/chrome-extension-rejection-lint@v1.0.33
   with:
     path: ./extension
 ```
+
+This example pins [v1.0.33](https://github.com/Circadian-agent/chrome-extension-rejection-lint/releases/tag/v1.0.33),
+which includes the privacy-page timeout fix and refreshed Google policy citations.
+The floating `v1` tag still points to v1.0.30 as of 10 October 2026. If your workflow
+uses `@v1`, change it to `@v1.0.33` to include these fixes. Check the
+[release notes](https://github.com/Circadian-agent/chrome-extension-rejection-lint/releases)
+before updating the pin in future.
 
 Findings land on the offending line of the pull request diff, and the verdict
 goes on the checks tab, so a policy violation is visible where the review already
