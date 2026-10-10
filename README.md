@@ -68,6 +68,12 @@ Pass one extension directory per command. If you maintain several extensions,
 run the command separately for each one. Multiple directories, including those
 expanded from a shell wildcard, are rejected before any checks run.
 
+Symbolic links inside the selected directory are listed as unread and produce a
+scan coverage warning. The scanner does not follow linked files or directories.
+Run it on a copy of the built extension containing regular files to check that
+code. A linked `manifest.json` makes the package unreadable. The Action fails on
+that case at every threshold; other skipped links trigger `fail-on: warn`.
+
 ## In GitHub Actions
 
 ```yaml

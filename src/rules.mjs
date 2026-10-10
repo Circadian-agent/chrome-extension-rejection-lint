@@ -18,7 +18,7 @@
 // is worth less than none. When in doubt a rule warns and says what a human
 // must check.
 
-import { grep, grepAcross, grepLarge, largeWindows, isCode, isMarkup, codeView, excerptAround, htmlCommentRanges, insideHtmlComment, offsetOf } from "./scan.mjs";
+import { grep, grepAcross, grepLarge, largeWindows, isCode, isMarkup, codeView, excerptAround, htmlCommentRanges, insideHtmlComment, offsetOf, skippedPath } from "./scan.mjs";
 import {
   MANIFEST_EVIDENCE, PERMISSION_API, NO_NAMESPACE_PERMISSIONS,
   namespaceUsed, looksMinified, looksMinifiedLarge, bareImports,
@@ -157,8 +157,8 @@ function declaredFiles(manifest) {
 const missingCache = new WeakMap();
 function missingDeclaredOf(manifest, files, skipped = []) {
   if (missingCache.has(files)) return missingCache.get(files);
-  const present = new Set([...files.map((f) => norm(f.path)), ...skipped.map((s) => norm(s.path))]);
-  const v = declaredFiles(manifest).filter((d) => !present.has(d.path));
+  const present = new Set(files.map((f) => norm(f.path)));
+  const v = declaredFiles(manifest).filter((d) => !present.has(d.path) && !skippedPath(d.path, skipped));
   missingCache.set(files, v);
   return v;
 }
@@ -167,7 +167,23 @@ function missingDeclaredOf(manifest, files, skipped = []) {
 
 export const RULES = [
 
-  // FIRST, BECAUSE IT CHANGES HOW YOU READ EVERY OTHER FINDING. If this fires,
+  {
+    id: "symbolic-links",
+    run({ skipped = [] }) {
+      const links = skipped.filter(s => s.kind === "symlink");
+      if (!links.length) return [];
+      return [finding({
+        severity: "warn",
+        title: `${links.length} symbolic link(s) were not read; scan coverage is incomplete`,
+        detail: "Linked files and directories are not followed. Their targets may be outside this package or form a cycle. "
+          + "Scan a copy of the built extension containing regular files, then run the checks again. "
+          + "This warning describes a limit of this scan, not a Chrome Web Store policy violation.",
+        evidence: links.map(s => ({ file: s.path, text: s.why })),
+      })];
+    },
+  },
+
+  // This changes how you read every policy finding. If this fires,
   // the directory is not the thing Chrome would review, and every rule that
   // reasons from the ABSENCE of something is unreliable against it.
   //
@@ -1094,7 +1110,7 @@ export const RULES = [
       // someone to go looking by hand for a site the tool already found.
       const streamed = new Set(oversized.filter(isCode).map((o) => o.path));
       const unreadCode = skipped.filter((s) =>
-        /\.(js|mjs|cjs|ts|jsx|tsx|html?)$/i.test(s.path || "") && !streamed.has(s.path));
+        s.kind !== "symlink" && /\.(js|mjs|cjs|ts|jsx|tsx|html?)$/i.test(s.path || "") && !streamed.has(s.path));
       if (unreadCode.length) {
         out.push(finding({
           severity: "warn",
@@ -1194,7 +1210,7 @@ export const RULES = [
       // read.
       const streamed = new Set(largeCode.map((o) => o.path));
       const unread = skipped.filter((s) =>
-        /\.(js|mjs|cjs|ts|jsx|tsx|html?)$/i.test(s.path || "") && !streamed.has(s.path));
+        s.kind === "symlink" || (/\.(js|mjs|cjs|ts|jsx|tsx|html?)$/i.test(s.path || "") && !streamed.has(s.path)));
       // AND THE ONES WE DID READ STILL COUNT TOWARD (2), which is the half that
       // matters. Having read the bytes of a bundle is not having seen the name:
       // over the 82 cached release packages, dropping the unread caveat without

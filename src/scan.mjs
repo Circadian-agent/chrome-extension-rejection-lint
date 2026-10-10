@@ -103,6 +103,16 @@ const TEXT_EXT = new Set([
   ".css", ".txt", ".md", ".webmanifest",
 ]);
 
+// A link may name a file or a whole directory. Its descendants are unknown,
+// not proven absent. Do not resolve the target just to make that distinction.
+export function skippedPath(path, skipped) {
+  const normalized = path.split(/[\\/]/).join("/");
+  return skipped.some(s => {
+    const entry = s.path.split(/[\\/]/).join("/");
+    return normalized === entry || (s.kind === "symlink" && normalized.startsWith(entry + "/"));
+  });
+}
+
 export function scan(root) {
   const files = [];
   const skipped = [];
@@ -123,6 +133,10 @@ export function scan(root) {
     for (const e of entries) {
       const full = join(dir, e.name);
       const rel = relative(root, full);
+      if (e.isSymbolicLink()) {
+        skipped.push({ path: rel, kind: "symlink", why: "symbolic link; target was not read" });
+        continue;
+      }
       if (e.isDirectory()) {
         if (SKIP_DIRS.has(e.name)) { skipped.push({ path: rel, why: "not part of a submitted package" }); continue; }
         walk(full);
@@ -153,7 +167,9 @@ export function scan(root) {
   let manifest = null;
   let manifestError = null;
   let manifestHint = null;
-  if (!existsSync(manifestPath)) {
+  if (skipped.some(s => s.path === "manifest.json" && s.kind === "symlink")) {
+    manifestError = "manifest.json is a symbolic link; its target was not read. Scan a package containing regular files.";
+  } else if (!existsSync(manifestPath)) {
     // NAME THE ACTUAL PROBLEM. "no manifest.json in this directory" was printed
     // for a path that is not a directory and for a path that does not exist at
     // all, which sends someone to look for a file in a folder that was never
@@ -233,7 +249,7 @@ export function resolveI18n(manifest, files, skipped = []) {
   // A locale file the scanner refused to read (over the size limit, unreadable)
   // is NOT evidence that a message is missing. Staying quiet there is the same
   // fail-safe direction as everything else in this file.
-  const wasSkipped = wanted ? skipped.some((s) => s.path.split(/[\\/]/).join("/") === wanted) : false;
+  const wasSkipped = wanted ? skippedPath(wanted, skipped) : false;
 
   let messages = null;
   if (file) {
