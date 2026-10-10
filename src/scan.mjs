@@ -100,7 +100,7 @@ export function buildHint(root, exists = existsSync) {
 const MAX_BYTES = 2 * 1024 * 1024;
 const TEXT_EXT = new Set([
   ".js", ".mjs", ".cjs", ".ts", ".jsx", ".tsx", ".json", ".html", ".htm",
-  ".css", ".txt", ".md", ".webmanifest",
+  ".css", ".scss", ".txt", ".md", ".webmanifest",
 ]);
 
 // A link may name a file or a whole directory. Its descendants are unknown,
